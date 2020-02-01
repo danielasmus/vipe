@@ -1,0 +1,7 @@
+*.pyc
+*.ipynb_checkpoints
+*.pdf
+*.jpg
+build/
+_pycache_/
+.DS_Store
