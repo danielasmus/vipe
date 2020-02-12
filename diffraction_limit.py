@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 """
+USED BY:
+    - find_beam_pos
+
 HISTORY:
     - 2020-01-21: created by Daniel Asmus
+    - 2020-02-22: change from "== str" to isinstance which is more robust
 
 
 NOTES:
@@ -34,12 +38,11 @@ def diffraction_limit(any_input, unit=None, pfov=None, instrument=None,
 
 
     # --- wavelength directly provided?
-    if type(any_input) == float or type(any_input) == int:
+    if isinstance(any_input, float) or isinstance(any_input, int):
         wlen = any_input
 
     # --- filtername provided?
-    elif type(any_input) == str:
-        print("is string")
+    elif isinstance(any_input, str):
         wlen = _filt_get_wlen(any_input, instrument=instrument,
                               insmode=insmode)
 
@@ -57,16 +60,19 @@ def diffraction_limit(any_input, unit=None, pfov=None, instrument=None,
 
         if unit == "px" or "pix" in unit:
             if pfov is None:
-                pfov = _fits_get_info(any_input, 'pfov')
+                pfov = _fits_get_info(head, 'pfov')
 
     else:
         wlen = None
 
-    print("funname, any_input, type(any_input), wlen: ",funname, any_input, type(any_input), wlen)
+    # print("funname, any_input, type(any_input), wlen: ",funname, any_input, type(any_input), wlen)
 
     if wlen is None:
-        msg = (funname + ": ERROR: no valid wavelength provided: any_input= "
-               + any_input)
+        msg = (funname + ": ERROR: no valid wavelength provided: any_input|type|instrument|insmode|pfov= "
+               + any_input + "|" + str(type(any_input)) + "|" + str(instrument)
+               + "|" + str(insmode)
+               + "|" + str(pfov)
+               )
 
         if logfile is not None:
             _print_log_info(msg, logfile)

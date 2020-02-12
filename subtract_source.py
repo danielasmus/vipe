@@ -4,6 +4,10 @@
 __version__ = "1.0.0"
 
 """
+USED BY:
+    - reduce_exposure
+    - reduce_indi_raws
+
 HISTORY:
     - 2020-01-15: created by Daniel Asmus
 

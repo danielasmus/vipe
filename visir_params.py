@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 """
+USED BY:
+    - filt_get_wlen
+    - reduce_exposure
+    - reduce_indi_raws
+
 HISTORY:
     - 2020-01-23: created by Daniel Asmus
+    - 2020-02-10: changed spec filter suffix from _spc to _SPC
 
 
 NOTES:
@@ -47,7 +53,7 @@ filtwlens['NEII_1'] = 12.27
 filtwlens['B12.4'] = 12.47
 filtwlens['NEII'] = 12.81
 filtwlens['NEII_2'] = 13.04
-filtwlens['NEII_2_spc'] = 12.81
+filtwlens['NEII_2_SPC'] = 12.81
 filtwlens['Q1'] = 17.65
 filtwlens['Q2'] =  18.72
 filtwlens['Q3'] = 19.5

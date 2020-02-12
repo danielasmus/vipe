@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 """
 HISTORY:
     - 2020-01-23: created by Daniel Asmus
+    - 2020-02-10: fixed bug with masked values in normal columns, also instead
+                  of fill values, now masked values are put into the pro table
 
 
 NOTES:
@@ -16,6 +18,7 @@ TO-DO:
 """
 import numpy as np
 import os
+from collections import OrderedDict
 from astropy.io import ascii
 from astropy.table import Table, Column, MaskedColumn
 from astropy.stats import circmean, circvar
@@ -35,6 +38,15 @@ def check_masked(d):
             nmask = np.sum(d[c].mask)
             if nmask > 0:
                 masked.append([c, np.where(d[c].mask)[0]])
+        else:
+            # --- if the column is not masked we have to go element-wise
+            nrow = len(d[c])
+            cm = []
+            for i in range(nrow):
+                 if np.ma.is_masked(d[c][i]):
+                     cm.append(i)
+            if len(cm) > 0:
+                masked.append([c, cm])
 
     return(masked)
 
@@ -55,26 +67,26 @@ def check_none(d):
 #%%
 # --- a little helper routine to determine the mean and variation params
 def fill_values(draw, dpro, rawkey, prokey, i, j, nof, ktype='tel',
-                deg=False, lowlim=None, uplim=None):
+                deg=False, lowlim=None, uplim=None, fill_value=np.ma.masked):
 
     if lowlim is None:
-        lowlim = np.nanmin(draw[rawkey][j:j+nof])
+        lowlim = np.ma.min(draw[rawkey][j:j+nof])
 
     if uplim is None:
-        uplim = np.nanmax(draw[rawkey][j:j+nof])
+        uplim = np.ma.max(draw[rawkey][j:j+nof])
 
     ids = np.where((draw[rawkey][j:j+nof] >= lowlim)
                    & (draw[rawkey][j:j+nof] <= uplim))[0]
 
     if len(ids) == 0:
         if ktype == 'tel':
-             dpro[prokey+"_mean"][i] = -999
-             dpro[prokey+"_start"][i] = -999
-             dpro[prokey+"_end"][i] = -999
+             dpro[prokey+"_mean"][i] = fill_value
+             dpro[prokey+"_start"][i] = fill_value
+             dpro[prokey+"_end"][i] = fill_value
 
         else:
-           dpro[prokey+"_median"][i] = -999
-           dpro[prokey+"_stddev"][i] = -999
+           dpro[prokey+"_median"][i] = fill_value
+           dpro[prokey+"_stddev"][i] = fill_value
 
         return
 
@@ -92,7 +104,7 @@ def fill_values(draw, dpro, rawkey, prokey, i, j, nof, ktype='tel',
                elif dpro[prokey+"_mean"][i] > 360:
                    dpro[prokey+"_mean"][i] -= 360
             else:
-                dpro[prokey+"_mean"][i] = np.nanmean(vals)
+                dpro[prokey+"_mean"][i] = np.ma.mean(vals)
 
             dpro[prokey+"_start"][i] = draw[rawkey][j]
             dpro[prokey+"_end"][i] = draw[rawkey][j+nof-1]
@@ -111,18 +123,18 @@ def fill_values(draw, dpro, rawkey, prokey, i, j, nof, ktype='tel',
                 dpro[prokey+"_stddev"][i] = np.sqrt(circvar(vals * u.deg).value)
 
             else:
-                dpro[prokey+"_median"][i] = np.nanmedian(vals)
-                dpro[prokey+"_stddev"][i] = np.std(vals)
+                dpro[prokey+"_median"][i] = np.ma.median(vals)
+                dpro[prokey+"_stddev"][i] = np.ma.std(vals)
 
     else:
         if ktype == 'tel':
-             dpro[prokey+"_mean"][i] = -999
-             dpro[prokey+"_start"][i] = -999
-             dpro[prokey+"_end"][i] = -999
+             dpro[prokey+"_mean"][i] = fill_value
+             dpro[prokey+"_start"][i] = fill_value
+             dpro[prokey+"_end"][i] = fill_value
 
         else:
-           dpro[prokey+"_median"][i] = -999
-           dpro[prokey+"_stddev"][i] = -999
+           dpro[prokey+"_median"][i] = fill_value
+           dpro[prokey+"_stddev"][i] = fill_value
 
 
 #%%
@@ -150,7 +162,89 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
     _print_log_info('\n\nNew execution of GROUP_FILES_TO_OBSERVATIONS\n',
                    logfile, mode=mode)
 
+    # --- column names for the product table and their data format
+    cols = OrderedDict({
+                  "expid": "{0:d}",
+                  "targname": '{:s}',
+                  "ra": '{:.6f}',
+                  "dec": '{:.5f}',
+                  "progid": '{:s}',
+                  "obsid": "{0:d}",
+                  "dateobs": '{:s}',
+                  "mjd": '{:.5f}',
+                  "tempno": "{0:d}",
+                  "insmode": '{:s}',
+                  "tempname": '{:s}',
+                  "datatype": '{:s}',
+                  "setup": '{:s}',
+                  "pfov": '{:.4f}',
+                  "dit": '{:.4f}',
+                  "nodtime": '{:.0f}',
+                  "noddir": '{:s}',
+                  "jitter": '{:.1f}',
+                  "chopthrow": '{:.1f}',
+                  "chopangle": '{:.1f}',
+                  "chopfreq": '{:.2f}',
+                  "expnof": "{0:d}",
+                  "nof": "{0:d}",
+                  "exptime": '{:.0f}',
+                  "grade": '{:s}',
+                  "posang": '{:.1f}',
+                  "absrot_mean": '{:.2f}',
+                  "absrot_start": '{:.2f}',
+                  "absrot_end": '{:.2f}',
+                  "parang_mean": '{:.2f}',
+                  "parang_start": '{:.2f}',
+                  "parang_end": '{:.2f}',
+                  "alt_mean": '{:.2f}',
+                  "alt_start": '{:.2f}',
+                  "alt_end": '{:.2f}',
+                  "az_mean": '{:.2f}',
+                  "az_start": '{:.2f}',
+                  "az_end": '{:.2f}',
+                  "airm_mean": '{:.3f}',
+                  "airm_start": '{:.3f}',
+                  "airm_end": '{:.3f}',
+                  "pwv_median": '{:.2f}',
+                  "pwv_stddev": '{:.2f}',
+                  "skytemp_median": '{:.0f}',
+                  "skytemp_stddev": '{:.0f}',
+                  "pressure_median": '{:.2f}',
+                  "pressure_stddev": '{:.2f}',
+                  "humidity_median": '{:.1f}',
+                  "humidity_stddev": '{:.1f}',
+                  "temperature_median": '{:.2f}',
+                  "temperature_stddev": '{:.2f}',
+                  "m1temp_median": '{:.2f}',
+                  "m1temp_stddev": '{:.2f}',
+                  "winddir_median": '{:.0f}',
+                  "winddir_stddev": '{:.1f}',
+                  "windspeed_median": '{:.2f}',
+                  "windspeed_stddev": '{:.2f}',
+                  "cohertime_median": '{:.4f}',
+                  "cohertime_stddev": '{:.4f}',
+                  "asmfwhm_median": '{:.2f}',
+                  "asmfwhm_stddev": '{:.2f}',
+                  "iafwhm_median": '{:.2f}',
+                  "iafwhm_stddev": '{:.2f}',
+                  "iafwhmlo_median": '{:.2f}',
+                  "iafwhmlo_stddev": '{:.2f}',
+                  "chopamed_median": '{:.0f}',
+                  "chopamed_stddev": '{:.2f}',
+                  "chopastd_median": '{:.1f}',
+                  "chopastd_stddev": '{:.2f}',
+                  "chopbmed_median": '{:.0f}',
+                  "chopbmed_stddev": '{:1f}',
+                  "chopbstd_median": '{:.1f}',
+                  "chopbstd_stddev": '{:.2f}',
+                  "cdifmed_median": '{:.2f}',
+                  "cdifmed_stddev": '{:.2f}',
+                  "cdifstd_median": '{:.2f}',
+                  "cdifstd_stddev": '{:.2f}'
+                  })
 
+
+    # --- read the raw file
     draw = ascii.read(ftabraw, header_start=0, delimiter=',',
                               guess=False)
 
@@ -221,165 +315,18 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
     # --- if the file not exists generate the empty table structure
     else:
       new = True
-      dpro = Table({
-                "expid": [None]*nexp,
-                "targname": [None]*nexp,
-                "ra": [None]*nexp,
-                "dec": [None]*nexp,
-                "progid": [None]*nexp,
-                "obsid": [None]*nexp,
-                "dateobs": [None]*nexp,
-                "mjd": [None]*nexp,
-                "tempno": [None]*nexp,
-                "insmode": [None]*nexp,
-                "tempname": [None]*nexp,
-                "datatype": [None]*nexp,
-                "setup": [None]*nexp,
-                "pfov": [None]*nexp,
-                "dit": [None]*nexp,
-                "nodtime": [None]*nexp,
-                "noddir": [None]*nexp,
-                "jitter": [None]*nexp,
-                "chopthrow": [None]*nexp,
-                "chopangle": [None]*nexp,
-                "chopfreq": [None]*nexp,
-                "expnof": [None]*nexp,
-                "nof": [None]*nexp,
-                "exptime": [None]*nexp,
-                "grade": [None]*nexp,
-                "posang": [None]*nexp,
-                "absrot_mean": [None]*nexp,
-                "absrot_start": [None]*nexp,
-                "absrot_end": [None]*nexp,
-                "parang_mean": [None]*nexp,
-                "parang_start": [None]*nexp,
-                "parang_end": [None]*nexp,
-                "alt_mean" : [None]*nexp,
-                "alt_start" : [None]*nexp,
-                "alt_end" : [None]*nexp,
-                "az_mean" : [None]*nexp,
-                "az_start" : [None]*nexp,
-                "az_end" : [None]*nexp,
-                "airm_mean" : [None]*nexp,
-                "airm_start" : [None]*nexp,
-                "airm_end" : [None]*nexp,
-                "pwv_median" : [None]*nexp,
-                "pwv_stddev" : [None]*nexp,
-                "skytemp_median" : [None]*nexp,
-                "skytemp_stddev" : [None]*nexp,
-                "pressure_median" : [None]*nexp,
-                "pressure_stddev" : [None]*nexp,
-                "humidity_median" : [None]*nexp,
-                "humidity_stddev" : [None]*nexp,
-                "temperature_median" : [None]*nexp,
-                "temperature_stddev" : [None]*nexp,
-                "m1temp_median" : [None]*nexp,
-                "m1temp_stddev" : [None]*nexp,
-                "winddir_median" : [None]*nexp,
-                "winddir_stddev" : [None]*nexp,
-                "windspeed_median" : [None]*nexp,
-                "windspeed_stddev" : [None]*nexp,
-                "cohertime_median" : [None]*nexp,
-                "cohertime_stddev" : [None]*nexp,
-                "asmfwhm_median" : [None]*nexp,
-                "asmfwhm_stddev" : [None]*nexp,
-                "iafwhm_median" : [None]*nexp,
-                "iafwhm_stddev" : [None]*nexp,
-                "iafwhmlo_median" : [None]*nexp,
-                "iafwhmlo_stddev" : [None]*nexp,
-                "chopamed_median" : [-999]*nexp,
-                "chopamed_stddev" : [-999]*nexp,
-                "chopastd_median" : [-999]*nexp,
-                "chopastd_stddev" : [-999]*nexp,
-                "chopbmed_median" : [-999]*nexp,
-                "chopbmed_stddev" : [-999]*nexp,
-                "chopbstd_median" : [-999]*nexp,
-                "chopbstd_stddev" : [-999]*nexp,
-                "cdifmed_median" : [-999]*nexp,
-                "cdifmed_stddev" : [-999]*nexp,
-                "cdifstd_median" : [-999]*nexp,
-                "cdifstd_stddev" : [-999]*nexp,
-               },
-               names = (    # with this array the order is fixed
-                        "expid",
-                        "targname",
-                        "ra",
-                        "dec",
-                        "progid",
-                        "obsid",
-                        "dateobs",
-                        "mjd",
-                        "tempno",
-                        "insmode",
-                        "tempname",
-                        "datatype",
-                        "setup",
-                        "pfov",
-                        "dit",
-                        "nodtime",
-                        "noddir",
-                        "jitter",
-                        "chopthrow",
-                        "chopangle",
-                        "chopfreq",
-                        "expnof",
-                        "nof",
-                        "exptime",
-                        "grade",
-                        "posang",
-                        "absrot_mean",
-                        "absrot_start",
-                        "absrot_end",
-                        "parang_mean",
-                        "parang_start",
-                        "parang_end",
-                        "alt_mean",
-                        "alt_start",
-                        "alt_end",
-                        "az_mean",
-                        "az_start",
-                        "az_end",
-                        "airm_mean",
-                        "airm_start",
-                        "airm_end",
-                        "pwv_median",
-                        "pwv_stddev",
-                        "skytemp_median",
-                        "skytemp_stddev",
-                        "pressure_median",
-                        "pressure_stddev",
-                        "humidity_median",
-                        "humidity_stddev",
-                        "temperature_median",
-                        "temperature_stddev",
-                        "m1temp_median",
-                        "m1temp_stddev",
-                        "winddir_median",
-                        "winddir_stddev",
-                        "windspeed_median",
-                        "windspeed_stddev",
-                        "cohertime_median",
-                        "cohertime_stddev",
-                        "asmfwhm_median",
-                        "asmfwhm_stddev",
-                        "iafwhm_median",
-                        "iafwhm_stddev",
-                        "iafwhmlo_median",
-                        "iafwhmlo_stddev",
-                        "chopamed_median",
-                        "chopamed_stddev",
-                        "chopastd_median",
-                        "chopastd_stddev",
-                        "chopbmed_median",
-                        "chopbmed_stddev",
-                        "chopbstd_median",
-                        "chopbstd_stddev",
-                        "cdifmed_median",
-                        "cdifmed_stddev",
-                        "cdifstd_median",
-                        "cdifstd_stddev"
-                        )
-                   )
+
+      # --- generate the output table
+      dpro = Table()
+      for c in cols.keys():
+          if 'd' in cols[c]:
+              dt = int
+          elif 's' in cols[c]:
+              dt = object
+          elif 'f' in cols[c]:
+              dt = float
+          dpro.add_column(MaskedColumn(np.ma.masked_all(nexp),
+                                       name=c, dtype=dt))
 
 
     # --- loop over all the exposures by MJD:
@@ -438,22 +385,24 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
         else:
             dpro["datatype"][id] = 'cycsum'
 
-        # --- fetch the grade and add it
+
         dpro["dateobs"][id] = draw['DATE-OBS'][j][0:19]
 
+        # --- fetch the grade and add it
         idg = [g for g, s in enumerate(dg['filename'])
                if dpro["dateobs"][id] in s]
         if idg:
             dpro["grade"][id] = dg['grade'][idg[0]]
         else:
-            dpro["grade"][id] = '-'
+            dpro["grade"][id] = "-"
 
         # --- fill in the other values
         if draw['insmode'][j] == 'IMG':
-            dpro["setup"][id] = draw['INS_FILT1_NAME'][j]
-        elif ((draw['insmode'][j] == 'ACQ-SPC-SPC')
-              | (draw['insmode'][j] == 'ACQ-IMG-SPC')):
-            dpro["setup"][id] = draw['INS_FILT2_NAME'][j]
+            dpro["setup"][id] = str(draw['INS_FILT1_NAME'][j])
+        elif draw['insmode'][j] == 'ACQ-SPC-SPC':
+            dpro["setup"][id] = str(draw['INS_FILT2_NAME'][j])
+        elif draw['insmode'][j] == 'ACQ-IMG-SPC':
+            dpro["setup"][id] = str(draw['INS_FILT1_NAME'][j])
         elif draw['insmode'][j] == 'SPC':
             dpro["setup"][id] = str(draw['INS_SLIT1_WID'][j])
         else:
@@ -469,7 +418,7 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
         try:
             dpro["exptime"][id] = float(draw['nodexptime'][j])*nof
         except:
-            dpro["exptime"][id] = -1
+            dpro["exptime"][id] = np.ma.masked
 
         dpro["targname"][id] = draw['TARG_NAME'][j]
         dpro["ra"][id] = draw['RA'][j]
@@ -485,8 +434,8 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
 
         if not draw['SEQ1_DIT'].mask[j]:
             dpro["dit"][id] = draw['SEQ1_DIT'][j]
-        else:
-            dpro["dit"][id] = -1
+        # else:
+        #     dpro["dit"][id] = -1
 
         # print(draw['CHOPNOD_DIR'][j], type(draw['CHOPNOD_DIR'][j]))
 
@@ -498,34 +447,32 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
         if not draw['JITTER_WIDTH'].mask[j]:
             dpro["jitter"][id] = draw['JITTER_WIDTH'][j]
         else:
-            dpro["jitter"][id] = -1
+            dpro["jitter"][id] = 0
 
         if not draw['CHOP_THROW'].mask[j]:
             dpro["chopthrow"][id] = draw['CHOP_THROW'][j]
-        else:
-            dpro["chopthrow"][id] = -1
+        # else:
+        #     dpro["chopthrow"][id] = -1
 
         if not draw['CHOP_POSANG'].mask[j]:
             dpro["chopangle"][id] = draw['CHOP_POSANG'][j]
-        else:
-            dpro["chopthrow"][id] = -1
+        # else:
+        #     dpro["chopthrow"][id] = -1
 
         if not draw['CHOP_FREQ'].mask[j]:
             dpro["chopfreq"][id] = draw['CHOP_FREQ'][j]
-        else:
-            dpro["chopfreq"][id] = -1
+        # else:
+        #     dpro["chopfreq"][id] = -1
 
         # --- actual time between two nods
         # print(i, id,j, nof)
-        try:
+        if nof > 1:
             dpro["nodtime"][id] = (draw['MJD-OBS'][j+nof-1]
                                    - draw['MJD-OBS'][j]) / (nof -1) * 24 * 3600
-        except:
-            dpro["nodtime"][id] = -1
 
         # --- now the changing telescope parameters
         if not any(draw['POSANG'].mask[j:j+nof]):
-            dpro["posang"][id] = np.nanmean(draw['POSANG'][j:j+nof])
+            dpro["posang"][id] = np.ma.mean(draw['POSANG'][j:j+nof])
 
         fill_values(draw, dpro, 'ABSROT', 'absrot', id, j, nof,
                     ktype='tel', deg=True)
@@ -571,7 +518,7 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
 
         # --- check is the PWV STD was larger during a file than in between
         if not any(draw['IWVSTD'].mask[j:j+nof]):
-            iwvstd = np.nanmean(draw['IWVSTD'][j:j+nof])
+            iwvstd = np.ma.mean(draw['IWVSTD'][j:j+nof])
 
             if dpro['pwv_stddev'][id] is not None:
                 if (iwvstd > dpro['pwv_stddev'][id]) & (iwvstd > 0):
@@ -593,87 +540,35 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
 
     # --- write out results
 
-    formats = {"exptime" : "%.0f",
-               "nodtime" : "%.0f",
-               "absrot_mean" : "%.2f",
-               "absrot_start" : "%.2f",
-               "absrot_end" : "%.2f",
-               "parang_mean" : "%.2f",
-               "parang_start" : "%.2f",
-               "parang_end" : "%.2f",
-               "alt_mean" : "%.2f",
-               "alt_start" : "%.2f",
-               "alt_end" : "%.2f",
-               "az_mean" : "%.2f",
-               "az_start" : "%.2f",
-               "az_end" : "%.2f",
-               "airm_mean" : "%.3f",
-               "airm_start" : "%.3f",
-               "airm_end" : "%.3f",
-               "pwv_median" : "%.2f",
-               "pwv_stddev" : "%.2f",
-               "skytemp_median" : "%.0f",
-               "skytemp_stddev" : "%.0f",
-               "pressure_median" : "%.2f",
-               "pressure_stddev" : "%.2f",
-               "humidity_median" : "%.1f",
-               "humidity_stddev" : "%.1f",
-               "temperature_median" : "%.2f",
-               "temperature_stddev" : "%.2f",
-               "m1temp_median" : "%.2f",
-               "m1temp_stddev" : "%.2f",
-               "winddir_median" : "%.0f",
-               "winddir_stddev" : "%.1f",
-               "windspeed_median" : "%.2f",
-               "windspeed_stddev" : "%.2f",
-               "cohertime_median" : "%.4f",
-               "cohertime_stddev" : "%.4f",
-               "asmfwhm_median" : "%.2f",
-               "asmfwhm_stddev" : "%.2f",
-               "iafwhm_median" : "%.2f",
-               "iafwhm_stddev" : "%.2f",
-               "iafwhmlo_median" : "%.2f",
-               "iafwhmlo_stddev" : "%.2f",
-               "chopamed_median" : "%.0f",
-               "chopamed_stddev" : "%.1f",
-               "chopastd_median" : "%.1f",
-               "chopastd_stddev" : "%.2f",
-               "chopbmed_median" : "%.0f",
-               "chopbmed_stddev" : "%.1f",
-               "chopbstd_median" : "%.1f",
-               "chopbstd_stddev" : "%.2f",
-               "cdifmed_median" : "%.2f",
-               "cdifmed_stddev" : "%.2f",
-               "cdifstd_median" : "%.2f",
-               "cdifstd_stddev" : "%.2f",
-               }
 
     # print(len(dpro), ftabpro)
-    # return(dpro)
+
 
     masked = check_masked(dpro)
 
     if len(masked) > 0:
-        msg = (funname + ": ERROR: DPRO contains masked values: ", masked)
+        msg = (funname + ": WARNING: DPRO contains masked values: " + str(masked))
 
         if logfile is not None:
             _print_log_info(msg, logfile)
 
-        raise ValueError(msg)
+        # raise ValueError(msg)
 
 
     nones = check_none(dpro)
 
     if len(nones) > 0:
-        msg = (funname + ": ERROR: DPRO contains None's: ", nones)
+        msg = (funname + ": WARNING: DPRO contains None's: " + str(nones))
 
         if logfile is not None:
             _print_log_info(msg, logfile)
 
-        raise ValueError(msg)
+        # raise ValueError(msg)
+
+    # return(dpro)
 
     dpro.write(ftabpro, delimiter=',', format='ascii',
-               fill_values=[(ascii.masked, '')], formats=formats,
+               fill_values=[(ascii.masked, '')], formats=cols,
                overwrite=True)
 
 
@@ -684,8 +579,9 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
         newCol = Column(expid, name='EXPID')
         draw.add_column(newCol)
 
+
     draw.write(ftabraw, delimiter=',', format='ascii',
-               fill_values=[(ascii.masked, '')])
+               fill_values=[(ascii.masked, '')], overwrite=True)
 
     msg = (" - Number of separate exposures found: " + str(counter+1))
     _print_log_info(msg, logfile)

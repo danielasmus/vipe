@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 """
+USED BY:
+    - undo_jitter
+    - reduce_burst_file
+
+
 HISTORY:
     - 2020-01-21: created by Daniel Asmus
+    - 2020-02-11: variable nodmode renamed to noddir
 
 
 NOTES:
@@ -18,7 +24,7 @@ TO-DO:
 from .calc_nodoffset import calc_nodoffset as _calc_nodoffset
 
 def calc_jitter(head=None, chopang=None, chopthrow=None, pfov=None,
-                   rotang=None, nodmode=None, noffset=None, nodpos=None,
+                   rotang=None, noddir=None, noffset=None, nodpos=None,
                    cumoffsetx=None, cumoffsety=None, verbose=False,
                    silent=False, pupiltrack=False, imgoffsetangle=92.5):
 
@@ -72,11 +78,11 @@ def calc_jitter(head=None, chopang=None, chopthrow=None, pfov=None,
 
     if nodpos == 'B':
 
-        if nodmode is None:
+        if noddir is None:
             if "HIERARCH ESO SEQ CHOPNOD DIR" in head:
-                nodmode = head["HIERARCH ESO SEQ CHOPNOD DIR"]
+                noddir = head["HIERARCH ESO SEQ CHOPNOD DIR"]
             else:
-                nodmode = 'PERPENDICULAR'
+                noddir = 'PERPENDICULAR'
                 if not silent:
                     print("COMPUTE_JITTER: WARNING: CHOPNOD DIR not in header! Assume PERPENDICULAR...")
 
@@ -84,7 +90,7 @@ def calc_jitter(head=None, chopang=None, chopthrow=None, pfov=None,
         if noffset is None:
             noffset = _calc_nodoffset(head=head, chopang=chopang,
                                         chopthrow=chopthrow, pfov=pfov,
-                                        rotang=rotang, nodmode=nodmode,
+                                        rotang=rotang, noddir=noddir,
                                         pupiltrack=pupiltrack,
                                         imgoffsetangle=imgoffsetangle)
 

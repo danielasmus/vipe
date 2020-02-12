@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 """
+USED BY:
+    - calc_beam_pos
+
+
 HISTORY:
     - 2020-01-23: created by Daniel Asmus
+    - 2020-02-11: change variable name nodmode to nodpos
 
 
 NOTES:

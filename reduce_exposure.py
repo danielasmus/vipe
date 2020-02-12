@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 """
+USED BY:
+    - reduce_obs
+
+
 HISTORY:
     - 2020-01-23: created by Daniel Asmus
+    - 2020-02-20: updates as result of changes in get_std_flux and dpro
+                  becoming a masked array
 
 
 NOTES:
@@ -26,6 +32,7 @@ from .calc_beampos import calc_beampos as _calc_beampos
 from .crop_image import crop_image as _crop_image
 from .find_beam_pos import find_beam_pos as _find_beam_pos
 from .find_source import find_source as _find_source
+from .fits_get_info import fits_get_info as _fits_get_info
 from .get_std_flux import get_std_flux as _get_std_flux
 from .measure_sensit import measure_sensit as _measure_sensit
 from .merge_fits_files import merge_fits_files as _merge_fits_files
@@ -87,18 +94,189 @@ def update_base_params(im, head, dpro, pfov, expid, fitbox=50, onlyhead=False):
         snbest, sens = _measure_sensit(im=im, flux=flux, showplot=False,
                                       std=std, exptime=exptime)
     except:
-        snbest = -1
-        sens = -1
+        snbest = np.ma.masked
+        sens = np.ma.masked
 
     head["BEST-SN"] = (snbest, "Best S/N from aperture phot following ESO pipeline")
     if not onlyhead:
         dpro['bestSN'][expid] = snbest
 
-    if sens != -1:
+    if not np.ma.is_masked(sens):
         head["SENSIT"] =(sens, "10 sigma in 1h sensitivity [mJy]")
 
         if not onlyhead:
             dpro["sensit_mJy"][expid] = sens
+
+
+#%%
+# --- Helper routine to reduce burst exposure
+def reduce_burst_exp(logfile, filenames, rawfolder, burstfolder, ditsoftaver,
+                     overwrite, noddir, bsumfolder, draw, rid, noe, box,
+                     AA_pos, alignmethod, chopsubmeth, refpos, verbose,
+                     searchsmooth, debug, plot, crossrefim, outfolder,
+                     outnames, head0, dpro, pfov, expid):
+    """
+    Internal helper routine to reduce (VISIR) burst mode exposures.
+    Used by reduce_exp
+    """
+
+    funname = "REDUCE_BURST_EXP"
+
+    # --- 3.1 First reduce the individual files with beam aligning
+    msg = (" - Reducing individual raw cubes...")
+    _print_log_info(msg, logfile)
+
+    nf = len(filenames)
+
+    for i in range(nf):
+
+        msg = (" - i, File: " + str(i)  + ", " + filenames[i] )
+        _print_log_info(msg, logfile)
+
+        fin = rawfolder + '/' + filenames[i]
+
+        fout = burstfolder + "/" + filenames[i].replace(".fits", "_median.fits")
+        if ditsoftaver > 1:
+            fout = fout.replace(".fits", "_aver" + str(ditsoftaver) + ".fits")
+
+        if overwrite == False and os.path.isfile(fout):
+
+            msg = (funname + ": File already reduced. Continue...")
+            _print_log_info(msg, logfile)
+            continue
+
+        # --- first find the off-nod image but only for perpendicular nodding
+        if noddir == "PERPENDICULAR":
+            k = i + (-1)**i
+            offnodfile = bsumfolder + '/' + filenames[k].replace(".fits", "_blindsum.fits")
+
+            # --- double check that the offnodfile really has a different nod position
+            if draw['NODPOS'][rid[i]] == draw['NODPOS'][rid[k]]:
+                msg = (funname + ": ERROR: wrong offnod file provided: \n"
+                        + filenames[k] + "\nContinue with next file...")
+
+                noe = noe + 1
+                _print_log_info(msg, logfile)
+                continue
+
+        else:
+            offnodfile = None
+
+        reffile = bsumfolder + '/' + filenames[i].replace(".fits", "_blindsum.fits")
+
+        try:
+            _reduce_burst_file(fin, outfolder=burstfolder, logfile=logfile,
+                              offnodfile=offnodfile, reffile=reffile, box=box,
+                              chopsubmeth=chopsubmeth, refpos=refpos,
+                              AA_pos=AA_pos, alignmethod=alignmethod,
+                              verbose=verbose, searchsmooth=searchsmooth,
+                              crossrefim=crossrefim, ditsoftaver=ditsoftaver,
+                              debug=debug, plot=plot)
+
+        except:
+            e = sys.exc_info()
+            msg = (funname + ": ERROR: Burst reduction failed: \n"
+               + str(e[1]) + '' + str(traceback.print_tb(e[2]))
+               + "\nContinue with next file...")
+
+            noe = noe + 1
+            _print_log_info(msg, logfile)
+            continue
+
+    # --- 3.2 Combine aligned cubes
+    msg = funname + ": Combining cubes..."
+    _print_log_info(msg, logfile, empty=1)
+
+    medfins = []
+    meanfins = []
+
+    for i in range(nf):
+
+       meanfins.append(burstfolder + "/" +
+                       filenames[i].replace(".fits", "_mean.fits"))
+
+       medfins.append(burstfolder + "/" +
+                      filenames[i].replace(".fits", "_median.fits"))
+
+
+    # --- 3.2.1 first do a blind merge of the individual nods
+    msg = funname + ": Performing blind merge..."
+    _print_log_info(msg, logfile)
+
+    aim = _merge_fits_files(infiles=meanfins, method='mean', northup=True,
+                           verbose=verbose, plot=plot, alignmethod=None)
+    fout = (outfolder + '/' + outnames[0] + '_' + alignmethod +
+            '_nonodal_meanall.fits')
+
+    update_base_params(aim, head0, dpro, pfov, expid)
+
+    fits.writeto(fout, aim, head0, overwrite=True)
+    fout = fout.replace(".fits", ".png")
+    _simple_image_plot(aim, fout, log=True)
+
+    msg = (" - Output written: " + fout)
+    _print_log_info(msg, logfile)
+
+
+    aim = _merge_fits_files(infiles=medfins, method='median', northup=True,
+                           verbose=verbose, alignmethod=None)
+
+    update_base_params(aim, head0, dpro, pfov, expid)
+
+    fout = (outfolder + '/' + outnames[0] + '_' + alignmethod +
+            '_nonodal_medall.fits')
+    fits.writeto(fout, aim, head0, overwrite=True)
+    fout = fout.replace(".fits", ".png")
+    _simple_image_plot(aim, fout, log=True)
+
+    msg = (" - Output written: " + fout)
+    _print_log_info(msg, logfile)
+
+    # --- 3.2.2 then try the same alignment method that was used for the individual frames
+    msg = funname + ": Performing aligned merge..."
+    _print_log_info(msg, logfile)
+
+    try:
+        aim = _merge_fits_files(infiles=meanfins, method='mean', northup=True,
+                           verbose=verbose, plot=plot, alignmethod=alignmethod)
+        fout = (outfolder + '/' + outnames[0] + '_' + alignmethod +
+                '_meanall.fits')
+
+        update_base_params(aim, head0, dpro, pfov, expid)
+
+        fits.writeto(fout, aim, head0, overwrite=True)
+        fout = fout.replace(".fits", ".png")
+        _simple_image_plot(aim, fout, log=True)
+
+        msg = (" - Output written: " + fout)
+        _print_log_info(msg, logfile)
+
+
+        aim = _merge_fits_files(infiles=medfins, method='median', northup=True,
+                           verbose=verbose, alignmethod=alignmethod)
+
+        update_base_params(aim, head0, dpro, pfov, expid)
+
+        fout = (outfolder + '/' + outnames[0] + '_' + alignmethod +
+                '_medall.fits')
+        fits.writeto(fout, aim, head0, overwrite=True)
+        fout = fout.replace(".fits", ".png")
+        _simple_image_plot(aim, fout, log=True)
+
+        msg = (" - Output written: " + fout)
+        _print_log_info(msg, logfile)
+
+    except:
+
+        e = sys.exc_info()
+        msg = (funname + ":  - ERROR: Aligning of individual nods failed: \n"
+               + str(e[1]) + '' + str(traceback.print_tb(e[2])))
+
+        _print_log_info(msg, logfile)
+
+        noe += 1
+
+
 
 
 
@@ -106,7 +284,7 @@ def update_base_params(im, head, dpro, pfov, expid, fitbox=50, onlyhead=False):
 #%%
 
 # === 3. DO THE REDUCTION OF INDIVIDUAL EXPOSURES
-def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None,
+def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
                     temprofolder=None, rawfolder=None, logfile=None,
                     outname='VISIR_OBS', outfolder='.', overwrite=False,
                     maxshift=10, extract=True, searcharea='chopthrow',
@@ -146,6 +324,8 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None,
 
     NOT FULLY IMPLEMENTED:
      - call as a stand-alone routine, i.e., without providing draw and dpro
+       This would require implementation extracting files from the sof.txt as
+       well as reduction of the raw files with reduce_indi_raws
 
     TO BE ADDED LATER:
         - correct treatment of HR and HRX SPC
@@ -153,6 +333,8 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None,
         - proper modification of the headers of the products
         - de-rotation for classical imaging with pupil tracking (burst should work)
     """
+
+    funname = "REDUCE_EXPOSURE"
 
     if debug:
         verbose = True
@@ -162,6 +344,7 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None,
     if temprofolder is None:
         temprofolder = outfolder
 
+    # --- create output folders
     hcycfolder = temprofolder+'/hcycles'
     bsumfolder = hcycfolder+'/blindsums'
     nodfolder = temprofolder+'/nods'
@@ -179,59 +362,179 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None,
     if not os.path.exists(outfolder):
         os.makedirs(outfolder)
 
-    if statcalfolder is None:
-        home = os.path.expanduser("~")
-        statcalfolder = home + '/work/common_routines/python'
-
     if logfile is None:
         logfile = outfolder + '/' + outname + ".log"
         mode = 'w'
     else:
         mode = 'a'
 
-    _print_log_info("Reduction of " + outname, logfile, mode=mode)
+    _print_log_info(funname + ": Reduction of " + outname, logfile, mode=mode)
 
 
     # --- read some important exposure parameters:
+    # --- if dpro is provided that is easy
     if dpro is not None:
-        datatype = dpro["datatype"][expid]
-        if insmode is None:
-            insmode = dpro["insmode"][expid]
-        tempname = dpro["tempname"][expid]
 
+        if instrument is None:
+            instrument = dpro["instrument"][expid]
+
+        if insmode is None:
+            insmode = dpro["tempname"][expid].split("_")[0]
+
+        targname = dpro["targname"][expid]
+        datatype = dpro["datatype"][expid]
+        tempname = dpro["tempname"][expid]
+        setup = dpro["setup"][expid]
+        pfov = dpro["pfov"][expid]
+        chopthrow = dpro["chopthrow"][expid]
+        noddir = dpro["noddir"][expid]
+    else:
+        targname = None
+        datatype = None
+        tempname = None
+        setup = None
+        pfov = None
+        chopthrow = None
+        noddir = None
+
+    # --- if the table with the raw files is provided get them from there
     if expid is not None and draw is not None:
         rid = np.where(draw['EXPID'] == expid)[0]
         nf = len(rid)
         filenames = draw['filename'][rid]
-        if tempname is None:
-            tempname = draw['TPL_ID'][rid[0]]
-        if insmode is None:
-            insmode = draw['insmode'][rid[0]]
-        #fram_format = draw['FRAM_FORMAT'][rid[0]]
 
-    else:
+        # --- abort reduction if we have any corrput files
+        if 'CORRUPT' in draw['DATE-OBS'][rid]:
+            msg = funname + ": ERROR: This observations contains corrupt files! Aborting..."
+            _print_log_info(msg, logfile)
+
+            if dpro is not None:
+                dpro['noerr'][expid] = dpro['noerr'][expid] + 1
+
+            return(1)
+
+        # # --- in addition we can get some
+        # if tempname is None:
+        #     tempname = draw['TPL_ID'][rid[0]]
+        # if insmode is None:
+        #     insmode = draw['insmode'][rid[0]
+        # #fram_format = draw['FRAM_FORMAT'][rid[0]]
+
+    # --- or in case a sof file in esorex style is provided
+    elif sof is not None:
+        fsof = open(sof)
+        # --- implement extractio of the fits files here
+        # rawfiles =
+
+
+    # --- if the raw files provided
+    if rawfiles is not None:
         nf = len(rawfiles)
         rid = np.arange(0,nf)
         filenames = rawfiles.split('/')[-1]
-        rawfolder = rawfiles.split('/')[0:-1]
 
+        if rawfolder is None:
+            rawfolder = rawfiles.split('/')[0:-1]
+
+    # --- check that we actually have some files
     if nf == 0:
-        msg = " - ERROR: No corresponding raw files found! Continue..."
+        msg = funname + ": ERROR: No corresponding raw files found! Aborting..."
         _print_log_info(msg, logfile)
 
         if dpro is not None:
             dpro['noerr'][expid] = dpro['noerr'][expid] + 1
         return(1)
 
-    if 'CORRUPT' in draw['DATE-OBS'][rid]:
-        msg = " - ERROR: This observations contains corrupt files! Continue..."
-        _print_log_info(msg, logfile)
+    # --- TO BE IMPLEMENTED: check if blindsums are available or whether this needs to be done
+    # ....
 
-        if dpro is not None:
-            dpro['noerr'][expid] = dpro['noerr'][expid] + 1
+    # --- get the first head
+    f0 = bsumfolder + '/' + filenames[0].replace(".fits", "_blindsum.fits")
+    hdu = fits.open(f0)
+    head0 = hdu[0].header
+    hdu.close()
 
-        return(1)
+    # --- in case we still don't have them, get some key parameters
+    if targname is None:
+        targname = _fits_get_info(head0, "target")
 
+    if instrument is None:
+        instrument = _fits_get_info(head0, "instrument")
+
+    if insmode is None:
+        insmode = _fits_get_info(head0, "insmode")
+
+    if tempname is None:
+        tempname = _fits_get_info(head0, "TPL ID")
+
+    if datatype is None:
+        datatype = _fits_get_info(head0, "datatype")
+
+    if pfov is None:
+        pfov = _fits_get_info(head0, "pfov")
+
+    if setup is None:
+        setup = _fits_get_info(head0, "setup")
+
+    if chopthrow is None:
+        chopthrow = _fits_get_info(head0, "CHOP THROW")
+
+    if noddir is None:
+        noddir = _fits_get_info(head0, "CHOPNOD DIR")
+
+
+    # --- compute the maximum field of view from half of
+    if not box:
+        box = int(np.floor(chopthrow / pfov))
+
+    # --- check if target is a calibrator
+    if insmode != "SPC":
+
+        # --- first just check if the target is found in the calibrator table
+        #     even if it was observed with a science template
+        try:
+            flux = _get_std_flux(head0, logfile=logfile)
+        except:
+            flux = -1
+
+        # --- if a flux was found update the table and header
+        if flux != -1:
+            head0["HIERARCH ESO QC JYVAL"] = (flux, "STD flux density in filter used [Jy]")
+            if dpro is not None:
+                dpro['STDflux_Jy'][expid] = flux
+
+        # --- if it was not found but the observation was with a cal template
+        #     raise en error
+        elif "cal" in tempname:
+            msg = (funname + ": ERROR: target not found in flux reference table")
+            _print_log_info(msg, logfile)
+            noe = noe + 1
+            flux = -1
+
+
+    msg =  " - Target name: " + str(targname) + "\n"
+
+    if flux > 0:
+        msg += " - STD flux [Jy]: " + "{:.2f}".format(flux)
+
+    msg += (
+            " - Instrument: " + str(instrument) + "\n" +
+            " - Instrument mode: " + str(insmode) + "\n" +
+            " - Template name: " + str(tempname) + "\n" +
+            " - PFOV [as]: " + str(pfov) + "\n" +
+            " - Setup: " + str(setup) + "\n" +
+            " - Data type: " + str(datatype) + "\n" +
+            " - Nod direction: " + str(noddir) + "\n" +
+            " - Chop throw [as]: " + str(chopthrow) + "\n" +
+            " - Max box size [px]: "+str(box)
+            )
+
+    _print_log_info(msg, logfile, logtime=False)
+
+
+    # === 1 Go over all files of the exposure and create nodding pairs
+    msg = funname + ": Creating blind nodding pairs..."
+    _print_log_info(msg, logfile, empty=1)
 
     nodims = []
     heads = []
@@ -242,14 +545,11 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None,
     heada = None
     # headb = None
 
-    # === 1 Go over all files of the exposure and create nodding pairs
     for i in range(nf):
         msg = (" - i, File: " + str(i)  + ", " + filenames[i] )
         _print_log_info(msg, logfile)
 
 
-        # LATER: some source detection-based fine centering of individual
-        #        files here
         fsingred = (bsumfolder + '/' +
                     filenames[i].replace(".fits", "_blindsum.fits"))
 
@@ -295,33 +595,13 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None,
     # === 2 Combination of the nodding pairs
 #    if len(heads) == 0:   # --- no idea why this was here???
 #        continue
+    msg = funname + ": Merging blind nodding pairs..."
+    _print_log_info(msg, logfile, empty=1)
+
     nodims = np.array(nodims)
     nnods = len(nodims)
-    head0 = heads[0]
 
-    # --- check if target is a calibrator
-    fluxreffile = statcalfolder + '/' + 'ima_std_star_cat.fits'
-    if not os.path.isfile(fluxreffile):
-        msg = ("REDUCE EXPOSURE: ERROR: flux reference table file not found! "
-               + fluxreffile)
-        _print_log_info(msg, logfile)
-        noe = noe + 1
-
-    else:
-
-        if insmode != "SPC":
-            flux = _get_std_flux(head0, reffile=fluxreffile)
-            if flux != -1:
-                head0["HIERARCH ESO QC JYVAL"] = (flux, "STD flux density in filter used [Jy]")
-                if dpro is not None:
-                    dpro['STDflux_Jy'][expid] = flux
-
-            elif "cal" in tempname:
-                msg = ("GET_STD_FLUX: target not found in flux reference table")
-                _print_log_info(msg, logfile)
-                noe = noe + 1
-
-    # --- do jitter correction
+    # --- 2.1 do jitter correction
     if 'HIERARCH ESO SEQ JITTER WIDTH' in head0:
         if head0['HIERARCH ESO SEQ JITTER WIDTH'] > 0:
             for i in range(nnods):
@@ -329,8 +609,8 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None,
                 # print("      - Nod no / jitter offs.: ",m,joff)
                 nodims[i] = _undo_jitter(ima=nodims[i], head=heads[i])
 
-    msg = "Do a simple combination of the individual nod cycles"
-    _print_log_info(msg, logfile)
+    # msg = funname + ": 1. simple combination"
+    # _print_log_info(msg, logfile)
 
     totim = np.mean(nodims, axis=0)
     fout = (outfolder + '/' + outnames[0] + '_all_blind.fits')
@@ -354,7 +634,7 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None,
     msg = ( " - BG median [ADU/DIT]: " + str(dpro["BGmed"][expid]) + "\n" +
             " - BG STDDEV [ADU/DIT]: " + str(dpro["BGstd"][expid])
            )
-    _print_log_info(msg, logfile)
+    _print_log_info(msg, logfile, logtime=False)
 
 
     if overwrite or not os.path.isfile(fout):
@@ -366,177 +646,38 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None,
         _print_log_info(msg, logfile)
 
 
-    # --- compute the maximum field of view from half of
-    chopthrow = float(head0["HIERARCH ESO TEL CHOP THROW"])
-    pfov = float(head0["HIERARCH ESO INS PFOV"])
-    nodmode = head0["HIERARCH ESO SEQ CHOPNOD DIR"]
-
-    if not box:
-        box = int(np.floor(chopthrow / pfov))
-    msg = ( " - PFOV [as]: " + str(pfov) + "\n" +
-            " - Nod mode: " + nodmode + "\n" +
-            " - Chop throw [as]: " + str(chopthrow) + "\n" +
-            " - Max box size: "+str(box)
-            )
-    _print_log_info(msg, logfile)
-
-
     # === 3 BURST & CYCSUM data ===
     if datatype == "halfcyc" or datatype == "burst":
 
-        msg = (" - Burst/halfcyc data encountered. Reduce individual cubes now...")
-        _print_log_info(msg, logfile)
+        msg = (funname + ": Burst/halfcyc data encountered...")
+        _print_log_info(msg, logfile, empty=1)
 
         burstfolder = hcycfolder+'/'+alignmethod
 
         if not os.path.exists(burstfolder):
             os.makedirs(burstfolder)
 
-        for i in range(nf):
-
-            msg = (" - i, File: " + str(i)  + ", " + filenames[i] )
-            _print_log_info(msg, logfile)
-
-            fin = rawfolder + '/' + filenames[i]
-
-            fout = burstfolder + "/" + filenames[i].replace(".fits", "_median.fits")
-            if ditsoftaver > 1:
-                fout = fout.replace(".fits", "_aver" + str(ditsoftaver) + ".fits")
-
-            if overwrite == False and os.path.isfile(fout):
-
-                msg = ("REDUCE_EXPOSURE: File already reduced. Continue...")
-                _print_log_info(msg, logfile)
-                continue
-
-            # --- first find the off-nod image but only for perpendicular nodding
-            if nodmode == "PERPENDICULAR":
-                k = i + (-1)**i
-                offnodfile = bsumfolder + '/' + filenames[k].replace(".fits", "_blindsum.fits")
-
-                # --- double check that the offnodfile really has a different nod position
-                if draw['NODPOS'][rid[i]] == draw['NODPOS'][rid[k]]:
-                    msg = ("REDUCE_EXPOSURE: ERROR: wrong offnod file provided: \n"
-                            + filenames[k] + "\nContinue with next file...")
-
-                    noe = noe + 1
-                    _print_log_info(msg, logfile)
-                    continue
-
-            else:
-                offnodfile = None
-
-            reffile = bsumfolder + '/' + filenames[i].replace(".fits", "_blindsum.fits")
-
-            try:
-                _reduce_burst_file(fin, outfolder=burstfolder, logfile=logfile,
-                                  offnodfile=offnodfile, reffile=reffile, box=box,
-                                  chopsubmeth=chopsubmeth, refpos=refpos,
-                                  AA_pos=AA_pos, alignmethod=alignmethod,
-                                  verbose=verbose, searchsmooth=searchsmooth,
-                                  crossrefim=crossrefim, ditsoftaver=ditsoftaver,
-                                  debug=debug, plot=plot)
-
-            except:
-                e = sys.exc_info()
-                msg = ("REDUCE_EXPOSURE: ERROR: Burst reduction failed: \n"
-                   + str(e[1]) + '' + str(traceback.print_tb(e[2]))
-                   + "\nContinue with next file...")
-
-                noe = noe + 1
-                _print_log_info(msg, logfile)
-                continue
-
-        msg = "REDUCE_EXPOSURE: combine all the merged cubes into one file..."
-        _print_log_info(msg, logfile)
-
-        medfins = []
-        meanfins = []
-
-        for i in range(nf):
-
-           meanfins.append(burstfolder + "/" +
-                           filenames[i].replace(".fits", "_mean.fits"))
-
-           medfins.append(burstfolder + "/" +
-                          filenames[i].replace(".fits", "_median.fits"))
-
-
-        # --- first do a blind merge of the individual nods
-        aim = _merge_fits_files(infiles=meanfins, method='mean', northup=True,
-                               verbose=verbose, plot=plot, alignmethod=None)
-        fout = (outfolder + '/' + outnames[0] + '_' + alignmethod +
-                '_nonodal_meanall.fits')
-
-        update_base_params(aim, head0, dpro, pfov, expid)
-
-        fits.writeto(fout, aim, head0, overwrite=True)
-        fout = fout.replace(".fits", ".png")
-        _simple_image_plot(aim, fout, log=True)
-
-        msg = (" - Output written: " + fout)
-        _print_log_info(msg, logfile)
-
-
-        aim = _merge_fits_files(infiles=medfins, method='median', northup=True,
-                               verbose=verbose, alignmethod=None)
-
-        update_base_params(aim, head0, dpro, pfov, expid)
-
-        fout = (outfolder + '/' + outnames[0] + '_' + alignmethod +
-                '_nonodal_medall.fits')
-        fits.writeto(fout, aim, head0, overwrite=True)
-        fout = fout.replace(".fits", ".png")
-        _simple_image_plot(aim, fout, log=True)
-
-        msg = (" - Output written: " + fout)
-        _print_log_info(msg, logfile)
-
         try:
-            # ---then try the same alignment method that was used for the individual frames
-            aim = _merge_fits_files(infiles=meanfins, method='mean', northup=True,
-                               verbose=verbose, plot=plot, alignmethod=alignmethod)
-            fout = (outfolder + '/' + outnames[0] + '_' + alignmethod +
-                    '_meanall.fits')
-
-            update_base_params(aim, head0, dpro, pfov, expid)
-
-            fits.writeto(fout, aim, head0, overwrite=True)
-            fout = fout.replace(".fits", ".png")
-            _simple_image_plot(aim, fout, log=True)
-
-            msg = (" - Output written: " + fout)
-            _print_log_info(msg, logfile)
-
-
-            aim = _merge_fits_files(infiles=medfins, method='median', northup=True,
-                               verbose=verbose, alignmethod=alignmethod)
-
-            update_base_params(aim, head0, dpro, pfov, expid)
-
-            fout = (outfolder + '/' + outnames[0] + '_' + alignmethod +
-                    '_medall.fits')
-            fits.writeto(fout, aim, head0, overwrite=True)
-            fout = fout.replace(".fits", ".png")
-            _simple_image_plot(aim, fout, log=True)
-
-            msg = (" - Output written: " + fout)
-            _print_log_info(msg, logfile)
-
+            reduce_burst_exp(logfile, filenames, rawfolder, burstfolder,
+                         ditsoftaver,overwrite, noddir, bsumfolder, draw,
+                         rid, noe, box, AA_pos, alignmethod, chopsubmeth,
+                         refpos, verbose, searchsmooth, debug, plot,
+                         crossrefim, outfolder, outnames, head0, dpro, pfov,
+                         expid)
         except:
-
             e = sys.exc_info()
-            msg = ("REDUCE_EXPOSURE:  - ERROR: Aligning of individual nods failed: \n"
-                   + str(e[1]) + '' + str(traceback.print_tb(e[2])))
+            msg = (funname + ": ERROR: Burst reduction failed!")
 
+            noe = noe + 1
             _print_log_info(msg, logfile)
 
-            noe += 1
 
 
-
-    # === 4 Automatic source extraction
+    # === 4 Automatic source extraction for imaging
     if extract and mode != 'SPC':
+
+        msg = funname + ": Trying to detect and extract beams..."
+        _print_log_info(msg, logfile, empty=1)
 
         # ---- WARNING: de-rotation for classical imaging with pupil tracking still to be implemented!
 
@@ -553,11 +694,15 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None,
                                                     plot=plot,
                                                     instrument=instrument,
                                                     insmode=insmode,
-                                                    logfile=logfile)
+                                                    logfile=logfile,
+                                                    chopthrow=chopthrow,
+                                                    noddir=noddir,
+                                                    filt=setup,
+                                                    pfov=pfov)
 
             except:
                 e = sys.exc_info()
-                msg = ("REDUCE_EXPOSURE: ERROR: Beam Position could not be found: \n"
+                msg = (funname + ": ERROR: Beam Position could not be found: \n"
                        + str(e[1]) + ' ' + str(traceback.print_tb(e[2]))
                        + "\nContinue assuming the positions...")
                 _print_log_info(msg, logfile)
@@ -585,7 +730,7 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None,
 
 
             if -1 in beampos:
-                msg = (" - ERROR: Not all expected beams were found! No source extraction possible...")
+                msg = (funname + ": ERROR: Not all expected beams were found! No source extraction possible...")
                 _print_log_info(msg, logfile)
 
                 if dpro is not None:
@@ -671,7 +816,7 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None,
         # --- take into account that in the case of parallel nodding the
         #     the central image has to be counted double.
         #     The first beam is always the double.
-        if nodmode == "PARALLEL":
+        if noddir == "PARALLEL":
             subims[0] = 0.5 * subims[0]
             subims.append(subims[0])
 
@@ -687,13 +832,19 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None,
             update_base_params(totim, head0, dpro, pfov, expid, onlyhead=onlyhead)
         except:
             e = sys.exc_info()
-            msg = ("REDUCE_EXPOSURE: ERROR: Failed to update base parameters: \n"
+            msg = (funname + ": ERROR: Failed to update base parameters: \n"
                    + str(e[1]) + '' + str(traceback.print_tb(e[2])))
             _print_log_info(msg, logfile)
             noe = noe + 1
 
         fout = (outfolder + '/' + outnames[0] + '_all_blind_extr.fits')
         fits.writeto(fout, totim, head0, overwrite=True)
+
+        fout = fout.replace(".fits", "_log.png")
+        _simple_image_plot(totim, fout, log=True)
+
+        fout = fout.replace("_log", "_lin")
+        _simple_image_plot(totim, fout, log=False)
 
         # --- to be uncommented once the make_gallery routine has been changed
         # try:
@@ -709,7 +860,7 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None,
 
         # except:
         #     e = sys.exc_info()
-        #     msg = ("REDUCE_EXPOSURE: ERROR:  Gallery plots failed to be created: \n"
+        #     msg = (funname + ": ERROR:  Gallery plots failed to be created: \n"
         #            + str(e[1]) + '' + str(traceback.print_tb(e[2])))
         #     _print_log_info(msg, logfile)
         #     noe = noe + 1
@@ -811,7 +962,7 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None,
 
         # --- write out
         if len(subims) == 0:
-            msg = ("REDUCE_EXPOSURE: WARNING: No source detected in the individual nods! ")
+            msg = (funname + ": WARNING: No source detected in the individual nods! ")
             _print_log_info(msg, logfile)
             if dpro is not None:
                 dpro['nowarn'][expid] = dpro['nowarn'][expid] + 1
@@ -830,7 +981,7 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None,
 #                       papercol=2, ncols=nbeams, cmap='gnuplot2', titles=titles,
 #                       inv=False, permin=40, permax=99.9, titcols='white')
 
-        if nodmode == "PARALLEL":
+        if noddir == "PARALLEL":
             subims[0] = 0.5 * subims[0]
             subims.append(subims[0])
 
@@ -840,6 +991,13 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None,
 
         fout = (outfolder + '/' + outnames[0] + '_all_extr.fits')
         fits.writeto(fout, totim, head0, overwrite=True)
+
+
+        fout = fout.replace(".fits", "_log.png")
+        _simple_image_plot(totim, fout, log=True)
+
+        fout = fout.replace("_log", "_lin")
+        _simple_image_plot(totim, fout, log=False)
 
         # --- to be uncommented once the make_gallery routine has been changed
         # try:
@@ -859,7 +1017,7 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None,
 
         # except:
         #     e = sys.exc_info()
-        #     msg = ("REDUCE_EXPOSURE: ERROR:  Gallery plots failed to be created: \n"
+        #     msg = (funname + ": ERROR:  Gallery plots failed to be created: \n"
         #            + str(e[1]) + '' + str(traceback.print_tb(e[2])))
         #     _print_log_info(msg, logfile)
         #     noe = noe + 1

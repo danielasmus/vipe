@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 """
+USED BY:
+    - reduce_exposure
+    - find_beam_pos
+
 HISTORY:
     - 2020-01-23: created by Daniel Asmus
+    - 2020-02-11: changed variable name nodmode to noddir
 
 
 NOTES:
@@ -20,7 +25,7 @@ from .fits_get_info import fits_get_info as _fits_get_info
 from .calc_chopoffset import calc_chopoffset as _calc_chopoffset
 from .calc_nodoffset import calc_nodoffset as _calc_nodoffset
 
-def calc_beampos(head=None, chopang=None, chopthrow=None, nodmode=None,
+def calc_beampos(head=None, chopang=None, chopthrow=None, noddir=None,
                     refpix=None, pfov=None, rotang=None,
                     winx=None, winy=None, verbose=False, pupiltrack=False,
                     imgoffsetangle=92.5, insmode=None, instrument=None):
@@ -62,10 +67,10 @@ def calc_beampos(head=None, chopang=None, chopthrow=None, nodmode=None,
         print(" - COMPUTE_BEAMPOS: refpix: ", refpix)
         print(" - COMPUTE_BEAMPOS: coffset: ", coffset)
 
-    if nodmode is None:
-        nodmode = head["HIERARCH ESO SEQ CHOPNOD DIR"]
+    if noddir is None:
+        noddir = head["HIERARCH ESO SEQ CHOPNOD DIR"]
 
-    noffset = _calc_nodoffset(head=head, coffset=coffset, nodmode=nodmode,
+    noffset = _calc_nodoffset(head=head, coffset=coffset, noddir=noddir,
                                 pupiltrack=pupiltrack,
                                 imgoffsetangle=imgoffsetangle)
 
@@ -105,7 +110,7 @@ def calc_beampos(head=None, chopang=None, chopthrow=None, nodmode=None,
     if verbose:
         print(" - COMPUTE_BEAMPOS: startx, starty, winx, winy: ", startx, starty, winx, winy)
 
-    if nodmode == 'PARALLEL':
+    if noddir == 'PARALLEL':
 
         beampos = np.zeros([3, 2])
         beampos[0, 0] = refpix[0] - starty
@@ -115,7 +120,7 @@ def calc_beampos(head=None, chopang=None, chopthrow=None, nodmode=None,
         beampos[2, :] = beampos[0, :] - coffset
 
     # still needs to be verified to work (probably wrong for rotangle != 0)!!
-    if nodmode == 'PERPENDICULAR':
+    if noddir == 'PERPENDICULAR':
 
         beampos = np.zeros([4, 2])
 

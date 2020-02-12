@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 """
+USED BY:
+    - reduce_exposure
+
 HISTORY:
     - 2020-01-23: created by Daniel Asmus
+    - 2020-02-11: variable noddir renamed to noddir
 
 
 NOTES:
@@ -681,7 +685,7 @@ def align_cube(box=None, ima=None, fin=None, ndit=None, superdit=None,
                firstchoppos="B", ditsoftaver=1, crossrefim=None,
                searchbox=50, fitbox=50, fillval=float('nan'),
                offchip=None, guesspos=None, fitrestab=None, nodpos=None,
-               nodmode=None, debug=False,
+               noddir=None, debug=False,
                datatype=None, maxshift=None, onlychop=None, offnod=0,
                minFWHM=None, maxFWHM=None, maxamp=None, minamp=0.01,
                guessFWHM=None, guessamp=None, guessbg=None, logfile=None):
@@ -758,8 +762,8 @@ def align_cube(box=None, ima=None, fin=None, ndit=None, superdit=None,
         nodpos = head["HIERARCH ESO SEQ NODPOS"]
 
 
-    if nodmode is None:
-        nodmode = head["HIERARCH ESO SEQ CHOPNOD DIR"]
+    if noddir is None:
+        noddir = head["HIERARCH ESO SEQ CHOPNOD DIR"]
 
     jitter = np.array(_calc_jitter(head=head, verbose=verbose))
 
@@ -787,7 +791,7 @@ def align_cube(box=None, ima=None, fin=None, ndit=None, superdit=None,
            "     - ndit = " + str(ndit) + "\n" +
            "     - superdit = " + str(superdit) + "\n" +
            "     - ditsoftaver = " + str(ditsoftaver) + "\n" +
-           "     - nodmode = " + str(nodmode) + "\n" +
+           "     - noddir = " + str(noddir) + "\n" +
            "     - nodpos = " + str(nodpos) + "\n" +
            "     - jitter = " + str(jitter) + "\n" +
            "     - cube dimensions = " + str(s) + "\n" +
@@ -806,13 +810,13 @@ def align_cube(box=None, ima=None, fin=None, ndit=None, superdit=None,
             # --- calculate the expected beam positions, might be needed below
             beampos =  _calc_beampos(head=head)
 
-            # --- select the right positions depending on the nodpos and nodmode
+            # --- select the right positions depending on the nodpos and noddir
             if nodpos == 'A':
                 beampos = beampos[:2,:]
                 diff = refpos - beampos[0,:]
 
             else:
-                if nodmode == 'PARALLEL':
+                if noddir == 'PARALLEL':
                     beampos = beampos[[2,0],:]
                 else:
                     beampos = beampos[2:,:]

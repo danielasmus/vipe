@@ -4,6 +4,9 @@
 __version__ = "1.0.0"
 
 """
+USED BY:
+    - reduce_indi_raws
+
 HISTORY:
     - 2020-01-23: created by Daniel Asmus
 

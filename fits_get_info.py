@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 """
+USED BY:
+    - reduce_indi_raws
+    - reduce_exposure
+
 HISTORY:
     - 2020-01-21: created by Daniel Asmus
+    - 2020-02-11: get_setup added, changed type == str comp to more robust
+                  isinstance
 
 
 NOTES:
@@ -34,7 +40,7 @@ def get_targname(any_input, instrument=None, logfile=None):
 
     # --- determine input type
     # --- is it a fits file name?
-    if type(any_input) == str:
+    if isinstance(any_input, str):
         if os.path.isfile(any_input):
             try:
                 hdu = fits.open(any_input)
@@ -91,7 +97,7 @@ def get_insmode(any_input, instrument=None, logfile=None):
 
     # --- determine input type
     # --- is it a fits file name?
-    if type(any_input) == str:
+    if isinstance(any_input, str):
         if os.path.isfile(any_input):
             try:
                 hdu = fits.open(any_input)
@@ -158,7 +164,7 @@ def get_datatype(any_input, instrument=None, logfile=None):
 
     # --- determine input type
     # --- is it a fits file name?
-    if type(any_input) == str:
+    if isinstance(any_input, str):
         if os.path.isfile(any_input):
             try:
                 hdu = fits.open(any_input)
@@ -207,8 +213,6 @@ def get_datatype(any_input, instrument=None, logfile=None):
             return("halfcyc")
 
 
-
-
 #%%
 # --- helper routine to get filtername
 def get_filtname(any_input, instrument=None, insmode=None, logfile=None):
@@ -221,7 +225,7 @@ def get_filtname(any_input, instrument=None, insmode=None, logfile=None):
 
     # --- determine input type
     # --- is it a fits file name?
-    if type(any_input) == str:
+    if isinstance(any_input, str):
         if os.path.isfile(any_input):
             try:
                 hdu = fits.open(any_input)
@@ -267,7 +271,7 @@ def get_filtname(any_input, instrument=None, insmode=None, logfile=None):
     if instrument == "VISIR":
         if insmode is not None:
             # --- spectroscopy?
-            if "spec" in insmode or "spc" in insmode:
+            if "SPC" in insmode and "IMG" not in insmode:
                 filtname = head["HIERARCH ESO INS FILT2 NAME"]
             else:  # or imaging?
                 filtname = head["HIERARCH ESO INS FILT1 NAME"]
@@ -298,7 +302,7 @@ def compute_nod_exptime(any_input, instrument=None, logfile=None):
 
     # --- determine input type
     # --- is it a fits file name?
-    if type(any_input) == str:
+    if isinstance(any_input, str):
         if os.path.isfile(any_input):
             try:
                 hdu = fits.open(any_input)
@@ -346,6 +350,81 @@ def compute_nod_exptime(any_input, instrument=None, logfile=None):
 
     return(res)
 
+#%%
+# --- Helper routine to determine setup depending on instrument mode
+def get_setup(any_input, instrument=None, insmode=None, logfile=None):
+    """
+    Helper routine to determine and return the setup (imaging filter or slit
+    width) for a given fits file or header and optionally given instrument and
+    mode
+    """
+    funname = "GET_SETUP"
+
+    # --- determine input type
+    # --- is it a fits file name?
+    if isinstance(any_input, str):
+        if os.path.isfile(any_input):
+            try:
+                hdu = fits.open(any_input)
+                head = hdu[0].header
+                hdu.close()
+
+            except:
+                msg = (funname + ": ERROR: provided file is not a fits file: any_input= "
+                       + any_input)
+
+                if logfile is not None:
+                    _print_log_info(msg, logfile)
+
+                raise ValueError(msg)
+
+    # --- otherwise assume it is a fits header
+    elif type(any_input) == fits.header.Header:
+        head = any_input
+    else:
+        msg = (funname + ": ERROR: Invalid input provided: type(any_input): "
+               + str(type(any_input))
+               )
+
+        if logfile is not None:
+            _print_log_info(msg, logfile)
+
+        raise ValueError(msg)
+
+
+    # --- determine instrument:
+    if instrument == None:
+        if "INSTRUME" in head:
+            instrument = head["INSTRUME"]
+
+    instrument = instrument.upper()
+
+    if insmode == None:
+        insmode = get_insmode(head, instrument=instrument, logfile=logfile)
+
+    insmode = insmode.upper()
+
+    if instrument == "VISIR":
+        # --- VISIR in imaging mode?
+        if 'IMG' in insmode or "ACQ" in insmode:
+            setup = get_filtname(head, instrument=instrument,
+                                 insmode=insmode, logfile=logfile)
+
+        # --- VISIR in spectro mode:
+        elif insmode == 'SPC':
+            setup = head['HIERARCH ESO INS SLIT1 WID']
+
+        else:
+            msg = (funname + ": ERROR: insmode not determined: "
+                   + str(insmode)
+                   )
+
+            if logfile is not None:
+                _print_log_info(msg, logfile)
+
+            raise ValueError(msg)
+
+    return(setup)
 
 
 #%%
@@ -361,7 +440,7 @@ def fits_get_info(any_input, keys=None, ext=None, instrument=None,
     funname = "FITS_GET_INFO"
 
     # --- determine input type
-    if type(any_input) == str:   # is it a file name?
+    if isinstance(any_input, str):   # is it a file name?
         if os.path.isfile(any_input):
             try:
                 hdu = fits.open(any_input)
@@ -550,9 +629,23 @@ def fits_get_info(any_input, keys=None, ext=None, instrument=None,
                 _print_log_info(msg, logfile)
                 params[key] = fill_value
 
+        # --- setup
+        elif key in ['SETUP']:
+            try:
+                params[key] = get_setup(head, instrument=instrument,
+                                           logfile=logfile)
+            except:
+                msg = (funname
+                       + ": WARNING: Setup could not be determined."
+                       )
+
+                _print_log_info(msg, logfile)
+                params[key] = fill_value
+
 
         # --- filter name
-        elif key in ['FILTER', 'FILTNAME', 'FILTERNAME', 'FILT NAME', 'FILTER NAME']:
+        elif key in ['FILTER', 'FILTNAME', 'FILTERNAME', 'FILT NAME',
+                     'FILTER NAME', "FILT"]:
             try:
                 params[key] = get_filtname(head, instrument=instrument,
                                            logfile=logfile)

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 """
 HISTORY:
     - 2020-01-23: created by Daniel Asmus
+    - 2020-02-10: updated changes due to dpro now being masked and get_STD_flux
+                  changed
 
 
 NOTES:
@@ -22,7 +24,7 @@ import shutil
 import inspect
 from astropy.io import ascii
 from astropy.time import Time
-from astropy.table import Column
+from astropy.table import MaskedColumn, Column
 
 from .duplicates_in_column import duplicates_in_column as _duplicates_in_column
 from .get_std_flux import get_std_flux as _get_std_flux
@@ -78,6 +80,8 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
         - correct treatment of SPC ACQ data
         - proper modification of the headers of the products
     """
+
+    funname = "REDUCE_OBS"
 
     if debug:
         verbose = True
@@ -142,7 +146,8 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
 
     for newcol in newcols:
         if newcol not in dpro.colnames:
-            dpro.add_column(Column(np.zeros(ntot), name=newcol))
+            dpro.add_column(MaskedColumn(np.ma.masked_all(ntot, dtype=float),
+                                         name=newcol))
             print("New Col added.")
 
     if not "nowarn" in dpro.colnames:
@@ -262,7 +267,7 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
         targ = dpro['targname'][tored[i]].replace(" ","").lstrip().rstrip()
         setup = dpro['setup'][tored[i]]
         date = dpro['dateobs'][tored[i]][0:19]
-        insmode = dpro['mode'][tored[i]]
+        insmode = dpro['insmode'][tored[i]]
         datatype = dpro['datatype'][tored[i]]
         nof = dpro['nof'][tored[i]]
         tempname = dpro['tempname'][tored[i]]
@@ -294,17 +299,18 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
 
         else:
             try:
-               std =  _get_std_flux(targ, filtname=setup, instrument=instrument) > 0
-               if std & ("obs" not in tempname):
+               std =  _get_std_flux(targ, filtname=setup, insmode=insmode,
+                                    instrument=instrument) > 0
+               if std and "obs" not in tempname:
                    cal = True
             except:
                 msg = "Target apparently no calibrator."
-                _print_log_info(msg, logfile, logtime=False)
+                _print_log_info(msg, logfile)
 
 
         if cal:
             msg = "Target identified as calibrator."
-            _print_log_info(msg, logfile, logtime=False)
+            _print_log_info(msg, logfile)
 
             outname = ("CAL_"+
                        insmode + '_' +
@@ -345,12 +351,12 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
                                  instrument=instrument, insmode=insmode)
 
             noe = noe + es
-            msg = ("REDUCE_OBSERVATION: Number of errors: " + str(noe))
+            msg = (funname + ": Number of errors: " + str(noe))
             _print_log_info(msg, logfile)
 
         except:
             e = sys.exc_info()
-            msg = ("REDUCE_OBSERVATION: ERROR: Exposure failed to reduce. \n"
+            msg = (funname + ": ERROR: Exposure failed to reduce. \n"
                    + str(e[1]) + ' ' + str(traceback.print_tb(e[2]))
                    + "\nContinue with next...")
             _print_log_info(msg, logfile)
@@ -374,4 +380,5 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
         shutil.copy(ftabpro, ftabpro.replace(".csv", "_backup.csv"))
 
         dpro.write(ftabpro, delimiter=',', format='ascii',
-                   fill_values=[(ascii.masked, '')], formats=formats)
+                   fill_values=[(ascii.masked, '')], formats=formats,
+                   overwrite=True)

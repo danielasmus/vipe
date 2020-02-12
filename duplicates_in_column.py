@@ -4,6 +4,9 @@
 __version__ = "1.0.0"
 
 """
+USED BY:
+    - group_raws_to_obs
+
 HISTORY:
     - 2020-01-23: created by Daniel Asmus
 

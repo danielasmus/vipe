@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 """
+USED BY:
+    - reduce_exposure
+
 HISTORY:
     - 2020-01-21: created by Daniel Asmus
+    - 2020-02-11: change from type==str to more robust isinstance
 
 
 NOTES:
@@ -45,7 +49,7 @@ def get_std_flux(any_input, filtname=None, instrument=None, insmode=None,
 
     # --- determine input type
     # --- is it a string?
-    if type(any_input) == str:
+    if isinstance(any_input, str):
 
         # --- is it a fits file name?
         if os.path.isfile(any_input):

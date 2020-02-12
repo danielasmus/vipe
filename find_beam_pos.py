@@ -4,6 +4,9 @@
 __version__ = "1.0.0"
 
 """
+USED BY:
+    - reduce_exposure
+
 HISTORY:
     - 2020-01-23: created by Daniel Asmus
 
@@ -72,7 +75,7 @@ def crosshair_marker(inner_r=0.5, pa = 0):
 #%%
 # --- main routine
 def find_beam_pos(im=None, fin=None, ext=None, head=None, chopang=None,
-                        chopthrow=None, nodmode=None, refpix=None,
+                        chopthrow=None, noddir=None, refpix=None,
                         pfov=None, rotang=None, winx=None, winy=None,
                         fitbox=50, nodpos=None, AA_pos=None, verbose=False,
                         sourceext='compact', filt=None, tol=10,
@@ -100,9 +103,25 @@ def find_beam_pos(im=None, fin=None, ext=None, head=None, chopang=None,
     if insmode is None:
         insmode = _fits_get_info(head, "insmode")
 
+    if pfov is None:
+        pfov = _fits_get_info(head, "pfov")
+
+    if filt is None:
+        filt = _fits_get_info(head, "filt")
+
+    if chopthrow is None:
+        chopthrow = _fits_get_info(head, "CHOP THROW")
+
+    if noddir is None:
+        noddir = _fits_get_info(head, "CHOPNOD DIR")
+
+    if nodpos is None:
+        nodpos = head['HIERARCH ESO SEQ NODPOS']
+
+
     # --- First compute the expected beam positions
     exppos = _calc_beampos(head=head, chopang=chopang, chopthrow=chopthrow,
-                             nodmode=nodmode, refpix=refpix, pfov=pfov,
+                             noddir=noddir, refpix=refpix, pfov=pfov,
                              rotang=rotang, winx=winx, winy=winy,
                              verbose=verbose, pupiltrack=pupiltrack,
                              imgoffsetangle=imgoffsetangle,
@@ -117,12 +136,6 @@ def find_beam_pos(im=None, fin=None, ext=None, head=None, chopang=None,
         exppos[:,1] = exppos[:,1] + xdif
         exppos[:,0] = exppos[:,0] + ydif
 
-    # --- check with nodding position(s) is/are included in the image
-    if nodpos is None:
-        nodpos = head['HIERARCH ESO SEQ NODPOS']
-
-    if nodmode is None:
-        nodmode = head["HIERARCH ESO SEQ CHOPNOD DIR"]
 
     # --- determine the maximum source extent if the source is compact
     if sourceext == 'compact':
@@ -164,9 +177,9 @@ def find_beam_pos(im=None, fin=None, ext=None, head=None, chopang=None,
     #     (for "both" all are used)
     if nodpos == 'A':
         exppos = exppos[:2,:]
-    elif nodpos == 'B' and nodmode == 'PARALLEL':
+    elif nodpos == 'B' and noddir == 'PARALLEL':
         exppos = exppos[[2,0],:]
-    elif nodpos == 'B' and nodmode == 'PERPENDICULAR':
+    elif nodpos == 'B' and noddir == 'PERPENDICULAR':
         exppos = exppos[2:,:]
 
 
@@ -185,7 +198,7 @@ def find_beam_pos(im=None, fin=None, ext=None, head=None, chopang=None,
             plt.scatter(exppos[2,1], exppos[2,0], color="black", marker=marker, s=100)
             plt.text(exppos[2,1], exppos[2,0]-30, "BA", color="black")
 
-            if nodmode == "PERPENDICULAR":
+            if noddir == "PERPENDICULAR":
                 plt.scatter(exppos[3,1], exppos[3,0], color="white", marker=marker, s=100)
                 plt.text(exppos[3,1], exppos[3,0]-30, "BB", color="white")
 
@@ -298,7 +311,7 @@ def find_beam_pos(im=None, fin=None, ext=None, head=None, chopang=None,
         exppos_new[1:,:] = exppos[1:,:] + dif
         dist = 0
         # --- if we are in perpendicular the situation is more complicated
-        if (nodmode == 'PERPENDICULAR') & (nodpos == "both"):
+        if (noddir == 'PERPENDICULAR') & (nodpos == "both"):
 
             # --- first assume that the beam is AA:
             if (exppos_new[3,0] < s[0]) & (exppos_new[3,1] < s[1]):
