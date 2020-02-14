@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.0.1"
+__version__ = "1.1.1"
 
 """
 USED BY:
@@ -10,6 +10,7 @@ USED BY:
 HISTORY:
     - 2020-01-21: created by Daniel Asmus
     - 2020-02-11: change from type==str to more robust isinstance
+    - 2020-02-14: added parameter silent
 
 
 NOTES:
@@ -34,7 +35,7 @@ from .angular_distance import angular_distance as _angular_distance
 
 def get_std_flux(any_input, filtname=None, instrument=None, insmode=None,
                  reffile=None, maxdist=30, namecol='STARS', verbose=False,
-                 logfile=None):
+                 logfile=None, silent=False):
     """
     Find and return the flux desnity in Jansky for either a given STD star name
     and filter, or from a fits file, or from a fits header.
@@ -177,8 +178,9 @@ def get_std_flux(any_input, filtname=None, instrument=None, insmode=None,
        if head is not None:
            insmode = _fits_get_info(head, "insmode")
        else:
-           msg = (funname + ": WARNING: No instrument mode provided! Assuming imaging...")
-           _print_log_info(msg, logfile)
+           if not silent:
+               msg = (funname + ": WARNING: No instrument mode provided! Assuming imaging...")
+               _print_log_info(msg, logfile)
            insmode = "IMG"
 
     # --- for SPCIMG the filter names have added "_spec" in the table
@@ -284,11 +286,12 @@ def get_std_flux(any_input, filtname=None, instrument=None, insmode=None,
 
     # --- have we found a match?
     if len(ids) == 0:
-        msg = (funname + ": ERROR: No matching star found: starname, ra, dec: "
-               + str(starname) + " " + str(ra) + " " + str(dec))
+        if not silent:
+            msg = (funname + ": ERROR: No matching star found: starname, ra, dec: "
+                   + str(starname) + " " + str(ra) + " " + str(dec))
 
-        if logfile is not None:
-            _print_log_info(msg, logfile)
+            if logfile is not None:
+                _print_log_info(msg, logfile)
 
         raise ValueError(msg)
 

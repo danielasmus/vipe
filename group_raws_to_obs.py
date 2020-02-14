@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 """
 HISTORY:
     - 2020-01-23: created by Daniel Asmus
     - 2020-02-10: fixed bug with masked values in normal columns, also instead
                   of fill values, now masked values are put into the pro table
+    - 2020-02-13: comment out masked value check, fixed bug with mjd
+                  comparison, added instrument keyword, added backup
 
 
 NOTES:
@@ -18,6 +20,7 @@ TO-DO:
 """
 import numpy as np
 import os
+import shutil
 from collections import OrderedDict
 from astropy.io import ascii
 from astropy.table import Table, Column, MaskedColumn
@@ -159,7 +162,7 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
     else:
         mode = 'a'
 
-    _print_log_info('\n\nNew execution of GROUP_FILES_TO_OBSERVATIONS\n',
+    _print_log_info('\n\nNew execution of ' + funname + '\n',
                    logfile, mode=mode)
 
     # --- column names for the product table and their data format
@@ -171,8 +174,9 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
                   "progid": '{:s}',
                   "obsid": "{0:d}",
                   "dateobs": '{:s}',
-                  "mjd": '{:.5f}',
+                  "mjd": '{:.8f}',
                   "tempno": "{0:d}",
+                  "instrument": '{:s}',
                   "insmode": '{:s}',
                   "tempname": '{:s}',
                   "datatype": '{:s}',
@@ -251,22 +255,22 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
     # --- data table integrity check
     dupl = _duplicates_in_column(table=draw, colname='MJD-OBS')
     if dupl is not None:
-        msg = ("ERROR: Duplicated files in table! MJDs: "
+        msg = (funname + ": ERROR: Duplicated files in raw table! MJDs: "
                + ', '.join([str(e) for e in dupl])
                + '. Exiting...')
 
         _print_log_info(msg, logfile)
-        exit
+        raise TypeError(msg)
 
     dg = ascii.read(ftablog, header_start=0, delimiter=',',
                               guess=False)
 
-
-    # --- sort files by date time
+    # --- make sure that the raw files are sorted by date time (some might
+    #     have been added later)
     id = np.argsort(draw['MJD-OBS'])
     draw = draw[id]
 
-    # --- throw out incomplete entries
+    # --- throw out incomplete entries (e.g., non-nodded through slit images)
     id = np.where(np.array(draw['nodexptime'], dtype=float) > 0)[0]
     draw = draw[id]
 
@@ -299,7 +303,11 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
         mjds[i] = draw['MJD-OBS'][id[0]]
 
 
-    # --- in case the file exists update and append information
+    # --- make and backup copy just in case
+    if os.path.isfile(ftabpro):
+        shutil.copy(ftabpro, ftabpro.replace(".csv", "_backup.csv"))
+
+    # --- in case the file exists update and append information to dpro file
     if os.path.isfile(ftabpro) and not overwrite:
 
         new = False
@@ -335,7 +343,8 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
 
         if not new:
             # --- check if already an entry in the table for that exposure
-            id = np.where(dpro["mjd"] == mjds[i])[0]
+            id = np.where(np.isclose(dpro["mjd"], mjds[i], atol=1e-7,
+                                     rtol=0))[0]
 
             # --- otherwise add a row at the end of the table
             if len(id) == 0:
@@ -426,6 +435,7 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
         dpro["progid"][id] = draw['PROG_ID'][j]
         dpro["obsid"][id] = draw['OBS_ID'][j]
         dpro["mjd"][id] = mjds[i]
+        dpro["instrument"][id] = draw['INSTRUME'][j]
         dpro["tempno"][id] = draw['TPLNO'][j]
         dpro["tempname"][id] = draw['TPL_ID'][j]
         dpro["expnof"][id] = draw['TPL_NEXP'][j]
@@ -544,28 +554,28 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
     # print(len(dpro), ftabpro)
 
 
-    masked = check_masked(dpro)
+    # masked = check_masked(dpro)
 
-    if len(masked) > 0:
-        msg = (funname + ": WARNING: DPRO contains masked values: " + str(masked))
+    # if len(masked) > 0:
+    #     msg = (funname + ": WARNING: DPRO contains masked values: " + str(masked))
 
-        if logfile is not None:
-            _print_log_info(msg, logfile)
+    #     if logfile is not None:
+    #         _print_log_info(msg, logfile)
 
-        # raise ValueError(msg)
+    #     # raise ValueError(msg)
 
 
-    nones = check_none(dpro)
+    # nones = check_none(dpro)
 
-    if len(nones) > 0:
-        msg = (funname + ": WARNING: DPRO contains None's: " + str(nones))
+    # if len(nones) > 0:
+    #     msg = (funname + ": WARNING: DPRO contains None's: " + str(nones))
 
-        if logfile is not None:
-            _print_log_info(msg, logfile)
+    #     if logfile is not None:
+    #         _print_log_info(msg, logfile)
 
-        # raise ValueError(msg)
+    #     # raise ValueError(msg)
 
-    # return(dpro)
+    # # return(dpro)
 
     dpro.write(ftabpro, delimiter=',', format='ascii',
                fill_values=[(ascii.masked, '')], formats=cols,

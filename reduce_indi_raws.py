@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 
 """
 HISTORY:
     - 2020-01-23: created by Daniel Asmus
+    - 2020-02-12: change to simple_image_plot, replace subtract source with
+                  better background estimate, fixed INSMODE-->insmode, funname
+                  added
+    - 2020-02-13: routine restructured, added keyword instrument
 
 
 NOTES:
@@ -19,13 +23,14 @@ import os
 import shutil
 from tqdm import tqdm
 from astropy.io import fits
+from astropy.stats import sigma_clip
 
 
 from .fits_get_info import fits_get_info as _fits_get_info
 from .print_log_info import print_log_info as _print_log_info
 from .simple_image_plot import simple_image_plot as _simple_image_plot
 from .simple_nod_exposure import simple_nod_exposure as _simple_nod_exposure
-from .subtract_source import subtract_source as _subtract_source
+# from .subtract_source import subtract_source as _subtract_source
 from . import visir_params as _vp
 
 
@@ -35,6 +40,7 @@ def reduce_indi_raws(infolder, outfolder, ftabraw, overwrite=True,
     """
     Go through all the raw files in the input folder
     """
+    funname = "REDUCE_INDI_RAWS"
 
     outfolder = outfolder + "/hcycles/blindsums"
 
@@ -50,15 +56,17 @@ def reduce_indi_raws(infolder, outfolder, ftabraw, overwrite=True,
     else:
         mode = 'a'
 
-    _print_log_info('\n\nNew execution of REDUCE_INDI_RAW_FILES\n',
+    _print_log_info('\n\nNew execution of ' + funname + '\n',
                    logfile, mode=mode)
 
     files = [ff for ff in os.listdir(infolder)
              if (ff.endswith('.fits') & ff.startswith('VISIR'))]
 
+    files = np.sort(files)
+
     nfiles = len(files)
 
-    msg = ('REDUCE_INDI_RAW_FILES: Number of raw files found: ' + str(nfiles))
+    msg = (funname + ': Number of raw files found: ' + str(nfiles))
     _print_log_info(msg, logfile)
 
     if os.path.isfile(ftabraw):
@@ -66,16 +74,11 @@ def reduce_indi_raws(infolder, outfolder, ftabraw, overwrite=True,
     else:
         newfile = True
 
-    if overwrite and not newfile:
+    if not newfile:
         shutil.copy(ftabraw, ftabraw.replace(".csv", "_backup.csv"))
 
-    if newfile or overwrite:
-        f = open(ftabraw, 'w')
-    else:
-        f = open(ftabraw, 'a')
-        f.write('\n')
-
-    keys = (
+    keystr = (
+            'INSTRUME'+', '+
             'DATE-OBS'+', '+
             'MJD-OBS'+', '+
             'TARG NAME'+', '+
@@ -102,7 +105,7 @@ def reduce_indi_raws(infolder, outfolder, ftabraw, overwrite=True,
             'JITTER WIDTH'+', '+
             'CUMOFFSETX'+', '+
             'CUMOFFSETY'+', '+
-            'INSMODE'+', '+
+            'insmode'+', '+
             'PFOV'+', '+
             'INS FILT1 NAME'+', '+
             'INS FILT2 NAME'+', '+
@@ -131,66 +134,95 @@ def reduce_indi_raws(infolder, outfolder, ftabraw, overwrite=True,
             'DPR CATG'
            )
 
-    nkeys = len(keys.split(','))
+    keys = keystr.split(',')
+    nkeys = len(keys)
 
-    #f.write(keys+'\n')
+    # --- if there is no raw table or we want to overwrite
+    if newfile or overwrite:
+        f = open(ftabraw, 'w')
+
+        # --- write the table header
+        f.write("filename,")
+        # for j in range(len(params)):
+        for p in keys:
+            # f.write(params.keys()[j]+', ')
+            f.write(str(p).rstrip().lstrip().replace(' ','_')+',')
+        f.write('nodexptime,chopamed,chopastd,chopbmed,chopbstd,cdifmed,cdifstd,EXPID\n')
+
+    # --- otherwise open existing table to append
+    else:
+        f = open(ftabraw, 'a')
+        # f.write('\n')
 
 
-    files = np.sort(files)
-
+    # --- loop over all the files
     for i in tqdm(range(nfiles)):
 
         #    if not os.path.isfile(fout):
     #        if i < nfiles-1:
 
         fin = infolder + "/" + files[i]
-        msg = ("REDUCE_INDI_RAW_FILES: File No, Name: " + str(i) + ', '
+        msg = (" - " + str(i) + ', '
                + files[i])
         _print_log_info(msg, logfile)
 
         fout = outfolder + "/" + files[i].replace(".fits", "_blindsum.fits")
 
-        if overwrite is False and os.path.isfile(fout):
+        # --- has the file been reduced already?
+        if os.path.isfile(fout):
+            reduced = True
+        else:
+            reduced = False
 
-            msg = ("REDUCE_INDI_RAW_FILES: File already reduced. Continue...")
+
+        # --- if the file was already reduced and the table present, assume it
+        #     is included
+        if reduced and not overwrite and not newfile:
+            msg = (" - File already reduced. Continue...")
             _print_log_info(msg, logfile)
             continue
 
-        # --- take care of corrupt files
-        corrupt = False
+        # --- can the raw file be read?
+        hdu = None
         try:
             hdu = fits.open(fin)
             head = hdu[0].header
-        except:
-            corrupt = True
 
-        if not corrupt and not justtable:
-            #n_ext = len(hdu)
+            # --- get the data format
             fram_format = _fits_get_info(head, "FRAM FORMAT",
                                               fill_value='')
-            try:
-                if fram_format == "extension":
 
+            # --- get a sky frame for each chop position
+            if fram_format == "extension":
                     chopasky = hdu[1].data
                     chopbsky = hdu[2].data
-                    data = hdu[-1].data
 
-                elif fram_format == "cube-ext":  # burst mode
-                    data = hdu[1].data
-                else:
-                    corrupt = True
-                    msg = ('REDUCE_INDI_RAW_FILES: WARNING: File format not \
+            elif fram_format == "cube-ext":  # burst mode
+                    # --- for burst mode simply take the first frame of each
+                    #     chop position
+                    chopasky = hdu[1].data[0]
+                    chopbsky = hdu[1].data[head['HIERARCH ESO DET NDIT']/
+                            head["HIERARCH ESO DET NAVRG"]]
+
+            else:
+                msg = (funname + ': ERROR: File format not \
                             recognised. Found FRAM FORMAT is '
                             + str(fram_format))
 
-                    _print_log_info(msg, logfile)
-                    hdu.close()
-            except:
-                corrupt = True
+                _print_log_info(msg, logfile)
                 hdu.close()
 
-        if corrupt:
-            msg = ('REDUCE_INDI_RAW_FILES: File corrupt:' + str(i) + ', '
+                # --- write an empty line in the table
+                f.write(files[i]+', ' + fram_format)
+                for j in range(nkeys):
+                    f.write(',')
+                    f.write(',-1\n')
+
+                continue
+
+        # --- if the file can not be read it must be corrupt
+        except:
+            msg = (funname + ': ERROR: File corrupt:' + str(i) + ', '
                    + fin)
             _print_log_info(msg, logfile)
 
@@ -198,40 +230,28 @@ def reduce_indi_raws(infolder, outfolder, ftabraw, overwrite=True,
             for j in range(nkeys):
                 f.write(',')
             f.write(',-1\n')
+
+            if hdu is not None:
+                hdu.close()
+
             continue
 
 
+        # --- read keywords from the fits header
+        params = _fits_get_info(head, keys=keystr, fill_value='')
 
-        # --- read fits header info
-        params = _fits_get_info(head, keys=keys, fill_value='')
-
-        # if len(params) != 35: print(len(params))
-        if (i == 0) & (newfile | overwrite):
-            f.write("filename,")
-            # for j in range(len(params)):
-            for p in params.keys():
-                # f.write(params.keys()[j]+', ')
-                f.write(str(p).replace(' ','_')+',')
-            f.write('nodexptime,chopamed,chopastd,chopbmed,chopbstd,cdifmed,cdifstd,EXPID\n')
-
+        # --- write keywords into the table
         f.write(files[i]+',')
-        # for j in range(len(params)):
         for p in params:
             f.write(str(params[p]).replace(',',' ')+',')
-            # f.write(str(params.values()[j]).replace(',',' ')+', ')
 
+        # --- add the exposure time of the nod
         nodexp = _fits_get_info(head, "nodexptime")
-        msg = ("REDUCE_INDI_RAW_FILES: Nod exp time: " + str(nodexp))
-        _print_log_info(msg, logfile)
+        # msg = (" - Nod exp time: " + str(nodexp))
+        # _print_log_info(msg, logfile)
         f.write("{:.0f}".format(nodexp))
 
-        # --- compute the background characteristics
-        if fram_format == "cube-ext":
-            # --- for burst mode simply take the first frame of each chop position
-            chopasky = data[0]
-            chopbsky = data[head['HIERARCH ESO DET NDIT']/
-                            head["HIERARCH ESO DET NAVRG"]]
-
+        # --- compute the MIR background characteristics of the frames
         # --- if no specfic range is supplied to measure the sky use the full
         #     illuminated area of the VISIR detector
         if sky_xrange is None:
@@ -252,38 +272,66 @@ def reduce_indi_raws(infolder, outfolder, ftabraw, overwrite=True,
         chopbstd = np.nanstd(chopbsky[sky_yrange[0]:sky_yrange[1],
                                       sky_xrange[0]:sky_xrange[1]])
 
+        # --- write background values into the table
         f.write(',' + "{:.0f}".format(chopamed)
                 + ',' + "{:.1f}".format(chopastd)
                 + ',' + "{:.0f}".format(chopbmed)
                 + ',' + "{:.1f}".format(chopbstd)
                 )
 
-        # --- write out a simple combination of the fits
-        if not justtable:
-            if fram_format == "extension":  # for extension data type simply take the last extension
-                outim = data
-                fits.writeto(fout, data, head, overwrite=True)
-            elif fram_format == "cube-ext":  # for burst mode do a simple combination of the frames
-                outim = _simple_nod_exposure(ima=data, fout=fout, head=head)
+        # --- if we just want the table but no reduction, we are done here.
+        if justtable:
+            hdu.close()
 
+            # --- if we do just the table fill empty the last background entries
+            f.write(',,,\n')
 
-            # --- background estimation:
-            bgim = _subtract_source(outim[sky_yrange[0]:sky_yrange[1],
-                                           sky_xrange[0]:sky_xrange[1]])
+            continue
 
-            difmed = np.nanmedian(bgim)
-
-            difstd = np.nanstd(bgim)
-
-            f.write(',' + "{:.2f}".format(difmed)
-                    + ',' + "{:.2f}".format(difstd)
-                    )
+        # --- otherwise if file reduced and no overwrite then we are also done
+        elif overwrite is False and reduced:
 
             hdu.close()
+
+            # --- open the reduced file
+            hdu = fits.open(fin)
+            outim = hdu[1].data
+            hdu.close()
+
+            msg = (" - File already reduced. Continue...")
+            _print_log_info(msg, logfile)
+
+        # --- otherwise, do simple combination chops in the fits
+        else:
+
+            # --- get the actual data and produce the outbut
+            if fram_format == "extension":  # for extension data type simply take the last extension
+                outim =  hdu[-1].data
+                fits.writeto(fout, outim, head, overwrite=True)
+
+            elif fram_format == "cube-ext":  # for burst mode do a simple combination of the frames
+                outim = _simple_nod_exposure(ima=hdu[1].data, fout=fout, head=head)
+
+
             fout = fout.replace(".fits", ".png")
-            _simple_image_plot(outim, fout, log=True)
+            _simple_image_plot(outim, fout, percentile=1, pwidth=6)
 
 
-        f.write(',-1\n')
+        # --- background estimation on the final product:
+        # bgim = _subtract_source(outim[sky_yrange[0]:sky_yrange[1],
+        #                                sky_xrange[0]:sky_xrange[1]])
+
+        bgim = sigma_clip(outim[sky_yrange[0]:sky_yrange[1],
+                                sky_xrange[0]:sky_xrange[1]],
+                          sigma=3, maxiters=3, masked=False)
+
+        difmed = np.nanmedian(bgim)
+
+        difstd = np.nanstd(bgim)
+
+        f.write(',' + "{:.2f}".format(difmed)
+                + ',' + "{:.2f}".format(difstd)
+                +',\n'
+                )
 
     f.close()

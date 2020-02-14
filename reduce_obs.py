@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 
 """
 HISTORY:
     - 2020-01-23: created by Daniel Asmus
     - 2020-02-10: updated changes due to dpro now being masked and get_STD_flux
                   changed
+    - 2020-02-12: no reduction of exposures with only one file, parameter
+                  ignore_errors added, fixed bug for duplicate check, updated
+                  error budget management
 
 
 NOTES:
@@ -45,7 +48,7 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
                        searchsmooth=3, crossrefim=None,
                        AA_pos=None, refpos=None, findbeams=True,
                        ditsoftaver=1, sky_xrange=None,
-                       sky_yrange=None):
+                       sky_yrange=None, ignore_errors=False):
     """
     wrapper reduction loop routine: go over the selected observations and
     reduce them by combining the different nod files
@@ -74,6 +77,9 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
      - findbeams: (default: True) Should the code try to find the beam positions or just extract at the computed position?
      - alignmethod: (default='fastgauss') specify the fitting algorithm for the frame alignment in burst mode data
      - verbose = False
+     - ignore_errors: (default=False) If set to True the reduction will continue
+                      depsite the reduction of some individual exposures is
+                      failing
 
     TO BE ADDED LATER:
         - correct treatment of HR and HRX SPC
@@ -120,12 +126,12 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
         dupl = _duplicates_in_column(table=dpro, colname='expid')
 
     if dupl is not None:
-        msg = ("ERROR: Duplicated files in table! expids: "
+        msg = (funname + ": ERROR: Duplicated files in exposure table! mjds/expids: "
                + ', '.join([str(e) for e in dupl])
                + '. Exiting...')
 
         _print_log_info(msg, logfile)
-        exit
+        raise TypeError(msg)
 
     ntot = len(dpro)
 
@@ -249,20 +255,39 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
     # --- data table integrity check
     dupl = _duplicates_in_column(table=draw, colname='MJD-OBS')
     if dupl is not None:
-        msg = ("ERROR: Duplicated files in table! MJDs: "
+        msg = (funname + ": ERROR: Duplicated files in raw file table! MJDs: "
                + ', '.join([str(e) for e in dupl])
                + '. Exiting...')
 
         _print_log_info(msg, logfile)
-        exit
+        raise TypeError(msg)
 
     # --- test whether output folder exists
     expfolder = outfolder + '/exposures'
     if not os.path.exists(expfolder):
         os.makedirs(expfolder)
 
+    # --- total error counter
+    noe = 0
+
     # --- loop over all the different exposures
     for i in range(nred):
+
+        # --- is a valid exposure selected?
+        if tored[i] < 0 or tored[i] > len(dpro['targname']):
+            msg = (funname + ": ERROR: invalid exposure ID requested: "
+                   + str(tored[i])
+                    )
+
+            _print_log_info(msg, logfile)
+
+            noe += 1
+
+            if not ignore_errors:
+                raise ValueError(msg)
+            elif i < nred-1:
+                msg = " Continuing with next..."
+                _print_log_info(msg, logfile, logtime=False)
 
         targ = dpro['targname'][tored[i]].replace(" ","").lstrip().rstrip()
         setup = dpro['setup'][tored[i]]
@@ -272,12 +297,9 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
         nof = dpro['nof'][tored[i]]
         tempname = dpro['tempname'][tored[i]]
 
-
-        noe = 0
-
         msg = ("\n"
                + "\n-------------------------------------------")
-        _print_log_info(msg, logfile, logtime=False)
+        _print_log_info(msg, logfile, logtime=False, empty=1)
 
         msg = ("Reduction of Exp: " + str(tored[i])
                + "\n - Target name: " + str(targ)
@@ -291,6 +313,14 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
 
         _print_log_info(msg, logfile)
 
+
+        # --- if number of raw files is 1, there is nothing to do
+        if nof < 2:
+            msg = " - Not enough raw files for further reduction! Continuing..."
+            _print_log_info(msg, logfile, logtime=False)
+            continue
+
+
         # --- if the target is a calibrator put results in a different subfolder
         cal = False
         if insmode == "SPC":
@@ -300,7 +330,7 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
         else:
             try:
                std =  _get_std_flux(targ, filtname=setup, insmode=insmode,
-                                    instrument=instrument) > 0
+                                    instrument=instrument, silent=True) > 0
                if std and "obs" not in tempname:
                    cal = True
             except:
@@ -351,15 +381,28 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
                                  instrument=instrument, insmode=insmode)
 
             noe = noe + es
-            msg = (funname + ": Number of errors: " + str(noe))
+            msg = (funname + ": Number of errors for exposure: " + str(es))
             _print_log_info(msg, logfile)
 
         except:
             e = sys.exc_info()
-            msg = (funname + ": ERROR: Exposure failed to reduce. \n"
-                   + str(e[1]) + ' ' + str(traceback.print_tb(e[2]))
-                   + "\nContinue with next...")
+            msg = (funname + ": ERROR: Exposure failed to reduce! \n"
+                    + str(e[1]) + ' ' + str(traceback.print_tb(e[2]))
+                    )
+
             _print_log_info(msg, logfile)
+
+            dpro['noerr'][tored[i]] = dpro['noerr'][tored[i]] + 1
+
+            if not ignore_errors:
+                raise TypeError(msg)
+            elif i < nred-1:
+                msg = " Continuing with next..."
+                _print_log_info(msg, logfile, logtime=False)
+
+        msg = ("\n"
+               + "\n-------------------------------------------")
+        _print_log_info(msg, logfile, logtime=False)
 
         # --- update the database file
         formats = {
@@ -382,3 +425,9 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
         dpro.write(ftabpro, delimiter=',', format='ascii',
                    fill_values=[(ascii.masked, '')], formats=formats,
                    overwrite=True)
+
+    msg = (funname
+           + ": All reductions finished with total number of errors: "
+           + str(noe))
+
+    _print_log_info(msg, logfile, empty=1)

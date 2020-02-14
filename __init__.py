@@ -49,7 +49,7 @@ from .reduce_obs import reduce_obs
 from .select_rows import select_rows
 from .simple_image_plot import simple_image_plot
 from .simple_nod_exposure import simple_nod_exposure
-from .subtract_source import subtract_source
+# from .subtract_source import subtract_source
 from .undo_jitter import undo_jitter
 from . import visir_params as vp
 
