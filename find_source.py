@@ -27,11 +27,9 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 mpl.rcParams['xtick.direction'] = 'in'
 mpl.rcParams['ytick.direction'] = 'in'
-
 from astropy.modeling import models, fitting
 
 from .gaussfitter import gaussfit as _gaussfit
-
 from .crop_image import crop_image as _crop_image
 from .measure_bkg import measure_bkg as _measure_bkg
 

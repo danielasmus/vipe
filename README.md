@@ -3,7 +3,7 @@ data.
 
 Written for Python 3 (will not run in Python 2)
 
-Requires: numpy, matplotlib, scipy, astropy, photutils.
+Requires: numpy, matplotlib, scipy, astropy, photutils, tqdm.
 
 Created by Daniel Asmus
 
