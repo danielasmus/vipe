@@ -1,9 +1,9 @@
 Python package to reduce ESO VLT/VISIR and ISAAC imaging (and spectroscopic)
 data.
 
-Written in Python 3 (might not run in Python 2)
+Written for Python 3 (will not run in Python 2)
 
-Requires: numpy, matplotlib, scipy, astropy.
+Requires: numpy, matplotlib, scipy, astropy, photutils.
 
 Created by Daniel Asmus
 
