@@ -25,10 +25,13 @@ from .fits_get_info import fits_get_info as _fits_get_info
 from .calc_chopoffset import calc_chopoffset as _calc_chopoffset
 from .calc_nodoffset import calc_nodoffset as _calc_nodoffset
 
+from . import visir_params as _vp
+from . import isaac_params as _ip
+
 def calc_beampos(head=None, chopang=None, chopthrow=None, noddir=None,
                     refpix=None, pfov=None, rotang=None,
                     winx=None, winy=None, verbose=False, pupiltrack=False,
-                    imgoffsetangle=92.5, insmode=None, instrument=None):
+                    imgoffsetangle=None, insmode=None, instrument=None):
     """
     compute the beam positions according to the chopping parameters of
     the observation
@@ -43,16 +46,22 @@ def calc_beampos(head=None, chopang=None, chopthrow=None, noddir=None,
     if instrument is None:
         instrument = _fits_get_info(head, "INSTRUME")
 
+    if noddir is None:
+        noddir = _fits_get_info(head, keys="CHOPNOD DIR")
+
     if insmode is None:
         insmode = _fits_get_info(head, "insmode")
 
     insmode = insmode.upper()
 
     if refpix is None:
-        if (insmode == "ACQ-SPC-SPC") | (insmode == "SPC"):
-            refpix = [512, 529]
-        else:
-            refpix = [530, 430]
+        if instrument == "VISIR":
+            if (insmode == "ACQ-SPC-SPC") | (insmode == "SPC"):
+                refpix = _vp.refpix_spc
+            else:
+                refpix = _vp.refpix_img
+        elif instrument == "ISAAC":
+            refpix = _ip.refpix_img
 
     coffset = _calc_chopoffset(head=head, chopang=chopang,
                                  chopthrow=chopthrow, pfov=pfov,
@@ -67,11 +76,10 @@ def calc_beampos(head=None, chopang=None, chopthrow=None, noddir=None,
         print(" - COMPUTE_BEAMPOS: refpix: ", refpix)
         print(" - COMPUTE_BEAMPOS: coffset: ", coffset)
 
-    if noddir is None:
-        noddir = head["HIERARCH ESO SEQ CHOPNOD DIR"]
+
 
     noffset = _calc_nodoffset(head=head, coffset=coffset, noddir=noddir,
-                                pupiltrack=pupiltrack,
+                                pupiltrack=pupiltrack, pfov=pfov,
                                 imgoffsetangle=imgoffsetangle)
 
     if verbose:

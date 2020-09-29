@@ -12,6 +12,7 @@ USED BY:
 HISTORY:
     - 2020-01-23: created by Daniel Asmus
     - 2020-02-10: changed spec filter suffix from _spc to _SPC
+    - 2020-06-18: add refpix and imoffsetangles
 
 
 NOTES:
@@ -68,3 +69,14 @@ filtwlens['11_3_SAM'] = 11.3
 # --- pixel scales
 sf_pfov = 0.0453
 spc_pfov = 0.076
+
+# --- derotator angle for imaging
+imgoffsetangle = 92.5
+
+# --- rotator direction
+rotsense = 1  # for VISIR the ADA.POSANG is 360-PA
+rotoffset = 0
+
+# --- reference pixel for acquisition
+refpix_spc = [512, 529]
+refpix_img = [530, 430]

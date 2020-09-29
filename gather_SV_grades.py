@@ -68,6 +68,12 @@ def gather_SV_grades(infolder, ftablog, logfile=None):
                 if outline not in outlines:
                     outlines.append(outline)
                     f.write(outline)
+            elif "ISAAC." in line and grade != None:
+                fname = line.split()[1].rstrip()
+                outline = fname + ', ' + grade + '\n'
+                if outline not in outlines:
+                    outlines.append(outline)
+                    f.write(outline)
 
         ff.close()
 

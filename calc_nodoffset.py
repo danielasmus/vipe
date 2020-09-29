@@ -25,7 +25,7 @@ from .fits_get_info import fits_get_info as _fits_get_info
 
 def calc_nodoffset(head=None, chopang=None, chopthrow=None, pfov=None,
                       rotang=None, noddir=None, coffset=None,
-                      pupiltrack=False, imgoffsetangle=92.5, insmode=None,
+                      pupiltrack=False, imgoffsetangle=None, insmode=None,
                       instrument=None):
 
     """
@@ -54,7 +54,7 @@ def calc_nodoffset(head=None, chopang=None, chopthrow=None, pfov=None,
                                      insmode=insmode, instrument=instrument)
 
     if noddir is None:
-        noddir = head["HIERARCH ESO SEQ CHOPNOD DIR"]
+        noddir = _fits_get_info(head, "CHOPNOD DIR")
 
     noffset = np.zeros(2)
 

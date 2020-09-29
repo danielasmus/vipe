@@ -5,6 +5,7 @@ __version__ = "1.1.0"
 
 """
 USED BY:
+    - find_beam_pos
     - reduce_exposure
     - gather_SV_grades
     - group_raws_to_obs

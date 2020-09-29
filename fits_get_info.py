@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.1.0"
+__version__ = "2.1.1"
 
 """
 USED BY:
+    - calc_beam_pos
+    - calc_jitter
+    - get_std_flux
     - reduce_indi_raws
     - reduce_exposure
+    - undo_jitter
 
 HISTORY:
     - 2020-01-21: created by Daniel Asmus
     - 2020-02-11: get_setup added, changed type == str comp to more robust
                   isinstance
+    - 2020-06-09: add ISAAC support
+    - 2020-06-11: silent parameter & warning for ISAAC nodpos added & bugfix for multiple key hits
+    - 2020-09-29: Enforce  pfov to be float (works only if not directly found)
 
 
 NOTES:
@@ -24,6 +31,7 @@ TO-DO:
 # import pdb
 from collections import OrderedDict
 import os
+import numpy as np
 from astropy.io import fits
 
 from .filt_get_wlen import filt_get_wlen as _filt_get_wlen
@@ -31,7 +39,7 @@ from .print_log_info import print_log_info as _print_log_info
 
 #%%
 # --- Helper routine to determine target name
-def get_targname(any_input, instrument=None, logfile=None):
+def get_targname(any_input, logfile=None):
     """
     Helper routine to determine and return the target name for a given fits
     file or header and given instrument
@@ -71,15 +79,17 @@ def get_targname(any_input, instrument=None, logfile=None):
 
 
     # --- determine instrument:
-    if instrument == None:
-        if "INSTRUME" in head:
-            instrument = head["INSTRUME"]
+    # if instrument == None:
+    #     if "INSTRUME" in head:
+    #         instrument = head["INSTRUME"]
 
-    if instrument == "VISIR" or instrument == None:
-        if "TARG NAME" in head:
-            targname = head["HIERARCH ESO OBS TARG NAME"]
-        else:
-            targname = head["OBJECT"]
+    # if instrument == "VISIR" or instrument == None:
+    if "TARG NAME" in head:
+        targname = head["HIERARCH ESO OBS TARG NAME"]
+    else:
+        targname = head["OBJECT"]
+
+
 
     return(targname)
 
@@ -130,7 +140,7 @@ def get_insmode(any_input, instrument=None, logfile=None):
     # --- determine instrument:
     if instrument == None:
         if "INSTRUME" in head:
-            instrument = head["INSTRUME"]
+            instrument = head["INSTRUME"].replace(" ", "")
 
     if instrument == "VISIR" or instrument == None:
         temp = head["HIERARCH ESO TPL ID"]
@@ -148,7 +158,177 @@ def get_insmode(any_input, instrument=None, logfile=None):
         else:
             insmode = "SPC"
 
+    elif instrument == "ISAAC":
+        temp = head["HIERARCH ESO TPL ID"]
+        # mode = head["HIERARCH ESO INS MODE"]
+
+        if "img" in temp:
+            insmode = "IMG"
+        elif "spec" in temp:
+            insmode = "SPC"
+
     return(insmode)
+
+
+#%%
+# --- Helper routine to determine instrument mode
+def get_noddir(any_input, instrument=None, logfile=None):
+    """
+    Helper routine to determine and return the nodding direction with respect
+    to the chopping direction for a given fits file or header and given
+    instrument
+    """
+    funname = "GET_NODDIR"
+
+    # --- determine input type
+    # --- is it a fits file name?
+    if isinstance(any_input, str):
+        if os.path.isfile(any_input):
+            try:
+                hdu = fits.open(any_input)
+                head = hdu[0].header
+                hdu.close()
+
+            except:
+                msg = (funname + ": ERROR: provided file is not a fits file: any_input= "
+                       + any_input)
+
+                if logfile is not None:
+                    _print_log_info(msg, logfile)
+
+                raise ValueError(msg)
+
+    # --- otherwise assume it is a fits header
+    elif type(any_input) == fits.header.Header:
+        head = any_input
+    else:
+        msg = (funname + ": ERROR: Invalid input provided: type(any_input): "
+               + str(type(any_input))
+               )
+
+        if logfile is not None:
+            _print_log_info(msg, logfile)
+
+        raise ValueError(msg)
+
+
+    # --- determine instrument:
+    if instrument == None:
+        if "INSTRUME" in head:
+            instrument = head["INSTRUME"].replace(" ", "")
+
+    if instrument == "VISIR" or instrument == None:
+        noddir = head["HIERARCH ESO SEQ CHOPNOD DIR"]
+
+    elif instrument == "ISAAC":
+        noddir = "PARALLEL"
+        # mode = head["HIERARCH ESO INS MODE"]
+
+    return(noddir)
+
+
+#%%
+# --- Helper routine to determine instrument mode
+def get_nodpos(any_input, instrument=None, logfile=None):
+    """
+    Helper routine to determine and return the nodding position for a given
+    fits file or header and given instrument
+    """
+    funname = "GET_NODPOS"
+
+    # --- determine input type
+    # --- is it a fits file name?
+    if isinstance(any_input, str):
+        if os.path.isfile(any_input):
+            try:
+                hdu = fits.open(any_input)
+                head = hdu[0].header
+                hdu.close()
+
+            except:
+                msg = (funname + ": ERROR: provided file is not a fits file: any_input= "
+                       + any_input)
+
+                if logfile is not None:
+                    _print_log_info(msg, logfile)
+
+                raise ValueError(msg)
+
+    # --- otherwise assume it is a fits header
+    elif type(any_input) == fits.header.Header:
+        head = any_input
+    else:
+        msg = (funname + ": ERROR: Invalid input provided: type(any_input): "
+               + str(type(any_input))
+               )
+
+        if logfile is not None:
+            _print_log_info(msg, logfile)
+
+        raise ValueError(msg)
+
+
+    # --- determine instrument:
+    if instrument == None:
+        if "INSTRUME" in head:
+            instrument = head["INSTRUME"].replace(" ", "")
+
+    if instrument == "VISIR" or instrument == None:
+        nodpos = head["HIERARCH ESO SEQ NODPOS"]
+
+    elif instrument == "ISAAC":
+        # --- unfortunately, the nod position is not explicitely stated in the
+        #     fits headers, so we assume it from the file number given that the
+        #     nodding sequence should always be ABBA
+
+        expno = head["HIERARCH ESO TPL EXPNO"]
+        exptot = head["HIERARCH ESO TPL NEXP"]
+
+        # --- is jittering on?
+        if "HIERARCH ESO SEQ JITTER WIDTH" in head:
+            jwidth = head["HIERARCH ESO SEQ JITTER WIDTH"]
+        else:
+            jwidth = 0
+
+        if "HIERARCH ESO TEL CHOP THROW" in head:
+            chopthrow = head["HIERARCH ESO TEL CHOP THROW"]
+        else:
+            chopthrow = 0
+
+        #     so we have to estimate it considering the current
+        #     offset in comparison to the jitter
+        cumx = head["HIERARCH ESO SEQ CUMOFFSETX"]
+        cumy = head["HIERARCH ESO SEQ CUMOFFSETY"]
+
+        # --- pixel size
+        if "HIERARCH ESO INS PIXSCALE" in head:
+            pfov = float(head["HIERARCH ESO INS PIXSCALE"])
+        elif "CD2_2" in head:
+            pfov = 3600*0.5*(np.abs(head["CD2_2"]) + np.abs(head["CD1_1"]))
+
+        #  --- if jitter is large compared to the chop throw we have a problem
+        if 3 * jwidth > chopthrow and exptot > 2:
+            msg = (funname + ": WARNING: 3*Jitter > Chop throw: Estimating nodpos from expno")
+
+            if logfile is not None:
+                _print_log_info(msg, logfile)
+
+            # --- assume a ABBA nod pattern
+            if expno % 4 < 2:
+                nodpos = 'A'
+            else:
+                nodpos = 'B'
+
+        # --- otherwise we can use the cumoffsets to estimate the nodpos
+        else:
+        # --- if we are close to the original position, we should be in A
+            if (np.abs(cumx*pfov) <= 3 * jwidth) & (np.abs(cumy*pfov) <= 3 * jwidth):
+                nodpos = "A"
+            else:
+                nodpos = "B"
+        # # mode = head["HIERARCH ESO INS MODE"]
+
+    return(nodpos)
 
 
 #%%
@@ -197,7 +377,7 @@ def get_datatype(any_input, instrument=None, logfile=None):
     # --- determine instrument:
     if instrument == None:
         if "INSTRUME" in head:
-            instrument = head["INSTRUME"]
+            instrument = head["INSTRUME"].replace(" ", "")
 
     if instrument == "VISIR" or instrument == None:
         cycsum = head['HIERARCH ESO DET CHOP CYCSUM']
@@ -211,6 +391,74 @@ def get_datatype(any_input, instrument=None, logfile=None):
 
         else:
             return("halfcyc")
+
+    elif instrument == "ISAAC":
+        return("cycsum")
+
+        # if head["NAXIS3"] == 2:
+        #     return("cube")
+        # elif "HCYCLE" in head["ORIGFILE"]:
+        #     return("hcycle")
+        # else:
+        #     return("chopdif")
+
+
+#%%
+# --- Helper routine to determine datatype
+def get_cycsum(any_input, instrument=None, logfile=None):
+
+    """
+    Helper routine to determine and return whether cycsum was true or false
+    for a given fits file or header for a given instrument
+    """
+
+    funname = "GET_CYCSUM"
+
+    # --- determine input type
+    # --- is it a fits file name?
+    if isinstance(any_input, str):
+        if os.path.isfile(any_input):
+            try:
+                hdu = fits.open(any_input)
+                head = hdu[0].header
+                hdu.close()
+
+            except:
+                msg = (funname + ": ERROR: provided file is not a fits file: any_input= "
+                       + any_input)
+
+                if logfile is not None:
+                    _print_log_info(msg, logfile)
+
+                raise ValueError(msg)
+
+    # --- otherwise assume it is a fits header
+    elif type(any_input) == fits.header.Header:
+        head = any_input
+    else:
+        msg = (funname + ": ERROR: Invalid input provided: type(any_input): "
+               + str(type(any_input))
+               )
+
+        if logfile is not None:
+            _print_log_info(msg, logfile)
+
+        raise ValueError(msg)
+
+
+    # --- determine instrument:
+    if instrument == None:
+        if "INSTRUME" in head:
+            instrument = head["INSTRUME"].replace(" ", "")
+
+    if instrument == "VISIR" or instrument == None:
+        cycsum = head['HIERARCH ESO DET CHOP CYCSUM']
+
+    elif instrument == "ISAAC":
+        cycsum = "T"
+
+    return(cycsum)
+
 
 
 #%%
@@ -257,7 +505,7 @@ def get_filtname(any_input, instrument=None, insmode=None, logfile=None):
     # --- determine instrument:
     if instrument == None:
         if "INSTRUME" in head:
-            instrument = head["INSTRUME"]
+            instrument = head["INSTRUME"].replace(" ", "")
 
     # --- instrument mode:
     if insmode is None:
@@ -280,6 +528,9 @@ def get_filtname(any_input, instrument=None, insmode=None, logfile=None):
                 filtname = head["HIERARCH ESO INS FILT1 NAME"]
             else:
                 filtname = head["HIERARCH ESO INS FILT2 NAME"]
+
+    elif instrument == "ISAAC":  # implicitely assuming LWI4 mode
+        filtname = head["HIERARCH ESO INS FILT3 NAME"]
 
     else:
         if "HIERARCH ESO INS FILT1 NAME" in head:
@@ -334,7 +585,7 @@ def compute_nod_exptime(any_input, instrument=None, logfile=None):
     # --- determine instrument:
     if instrument == None:
         if "INSTRUME" in head:
-            instrument = head["INSTRUME"]
+            instrument = head["INSTRUME"].replace(" ", "")
 
     # --- computation is different depending on instrument
     if instrument == "VISIR" or instrument == None:
@@ -346,6 +597,12 @@ def compute_nod_exptime(any_input, instrument=None, logfile=None):
         ndit = head['HIERARCH ESO DET NDIT']
         nchop = head['HIERARCH ESO DET CHOP NCYCLES']
 
+        res = dit * ndit * nchop * 2
+
+    elif instrument == "ISAAC":
+        dit = head['HIERARCH ESO DET DIT']
+        ndit = head['HIERARCH ESO DET NDIT']
+        nchop = head['HIERARCH ESO DET CHOP NCYCLES']
         res = dit * ndit * nchop * 2
 
     return(res)
@@ -395,7 +652,7 @@ def get_setup(any_input, instrument=None, insmode=None, logfile=None):
     # --- determine instrument:
     if instrument == None:
         if "INSTRUME" in head:
-            instrument = head["INSTRUME"]
+            instrument = head["INSTRUME"].replace(" ", "")
 
     instrument = instrument.upper()
 
@@ -424,13 +681,18 @@ def get_setup(any_input, instrument=None, insmode=None, logfile=None):
 
             raise ValueError(msg)
 
+
+    elif instrument == "ISAAC":
+        setup = get_filtname(head, instrument=instrument,
+                            insmode=insmode, logfile=logfile)
+
     return(setup)
 
 
 #%%
 # --- main routine
 def fits_get_info(any_input, keys=None, ext=None, instrument=None,
-                  fill_value=None, logfile=None):
+                  fill_value=None, logfile=None, silent=False):
 
     """
     take a fits header and extract a given list of keywords from it and return
@@ -529,7 +791,7 @@ def fits_get_info(any_input, keys=None, ext=None, instrument=None,
     # --- get the instrument if not provided
     if instrument is None:
         if "INSTRUME" in head:
-            instrument = head["INSTRUME"]
+            instrument = head["INSTRUME"].replace(" ", "")
 
     # --- if no keys are provided use a default list assuming VISIR data
     if keys is None:
@@ -593,27 +855,68 @@ def fits_get_info(any_input, keys=None, ext=None, instrument=None,
         # --- first check if the key value is directly found
         ids = [j for j, s in enumerate(head) if key in s]
         if ids:
-#            if len(ids) > 1:
+
+            # print(ids)
+
+            # --- if more than one hit take the one that matches best (i.e.,
+            #     is the shortest)
+            if len(ids) > 1:
+                lens = [len(head.cards[j][0]) for j in ids]
+                idsel = np.argmin(lens)
+
+                params[key] = head[ids[idsel]]
+
 #                print(key+':')
 #                for j in ids:
 #                    print(' - '+str(head.keys()[j]))
-
-            params[key] = head[ids[0]]
+            else:
+                params[key] = head[ids[0]]
 
         # --- if not then maybe it is one of the following generals?
         # --- target name
         elif key in ['NAME', 'TARGNAME', 'TARGET', 'TARGET NAME']:
             try:
-                params[key] = get_targname(head, instrument=instrument,
+                params[key] = get_targname(head, logfile=logfile)
+
+            except:
+
+                msg = (funname
+                        + ": WARNING: Target name could not be determined."
+                        )
+
+                if not silent:
+                    _print_log_info(msg, logfile)
+                params[key] = fill_value
+
+
+        # --- Nodding direction
+        elif key == 'CHOPNOD DIR':
+            try:
+                params[key] = get_noddir(head, instrument=instrument,
                                            logfile=logfile)
             except:
                 msg = (funname
-                       + ": WARNING: Instrument mode could not be determined."
+                       + ": WARNING: Chopnod direction could not be determined."
                        )
 
-                _print_log_info(msg, logfile)
+                if not silent:
+                    _print_log_info(msg, logfile)
                 params[key] = fill_value
 
+
+        # --- Nod position
+        elif key == 'NODPOS':
+            try:
+                params[key] = get_nodpos(head, instrument=instrument,
+                                           logfile=logfile)
+            except:
+                msg = (funname
+                       + ": WARNING: Nod position could not be determined."
+                       )
+
+                if not silent:
+                    _print_log_info(msg, logfile)
+                params[key] = fill_value
 
 
         # --- insmode
@@ -626,8 +929,25 @@ def fits_get_info(any_input, keys=None, ext=None, instrument=None,
                        + ": WARNING: Instrument mode could not be determined."
                        )
 
-                _print_log_info(msg, logfile)
+                if not silent:
+                    _print_log_info(msg, logfile)
                 params[key] = fill_value
+
+
+        # --- cycsum
+        elif key == 'CYCSUM':
+            try:
+                params[key] = get_cycsum(head, instrument=instrument,
+                                           logfile=logfile)
+            except:
+                msg = (funname
+                       + ": WARNING: cycle sum flag could not be determined."
+                       )
+
+                if not silent:
+                    _print_log_info(msg, logfile)
+                params[key] = fill_value
+
 
         # --- setup
         elif key in ['SETUP']:
@@ -639,7 +959,8 @@ def fits_get_info(any_input, keys=None, ext=None, instrument=None,
                        + ": WARNING: Setup could not be determined."
                        )
 
-                _print_log_info(msg, logfile)
+                if not silent:
+                    _print_log_info(msg, logfile)
                 params[key] = fill_value
 
 
@@ -654,7 +975,8 @@ def fits_get_info(any_input, keys=None, ext=None, instrument=None,
                        + ": WARNING: Filtername could not be determined."
                        )
 
-                _print_log_info(msg, logfile)
+                if not silent:
+                    _print_log_info(msg, logfile)
                 params[key] = fill_value
 
         # --- wavelength
@@ -668,7 +990,8 @@ def fits_get_info(any_input, keys=None, ext=None, instrument=None,
                        + ": WARNING: Filtername could not be determined."
                        )
 
-                _print_log_info(msg, logfile)
+                if not silent:
+                    _print_log_info(msg, logfile)
 
             try:
                 insmode = get_insmode(head, instrument=instrument,
@@ -679,7 +1002,8 @@ def fits_get_info(any_input, keys=None, ext=None, instrument=None,
                        + ": WARNING: Instrument mode could not be determined."
                        )
 
-                _print_log_info(msg, logfile)
+                if not silent:
+                    _print_log_info(msg, logfile)
 
             try:
                 params[key] = _filt_get_wlen(filtname, instrument=instrument,
@@ -690,7 +1014,8 @@ def fits_get_info(any_input, keys=None, ext=None, instrument=None,
                        + ": WARNING: Wavelength could not be determined."
                        )
 
-                _print_log_info(msg, logfile)
+                if not silent:
+                    _print_log_info(msg, logfile)
                 params[key] = fill_value
 
         # --- exposure time of the nod, i.e., file
@@ -703,7 +1028,8 @@ def fits_get_info(any_input, keys=None, ext=None, instrument=None,
                        + ": WARNING: Nod exposure time could not be determined."
                        )
 
-                _print_log_info(msg, logfile)
+                if not silent:
+                    _print_log_info(msg, logfile)
                 params[key] = fill_value
 
         # --- datatype
@@ -716,9 +1042,40 @@ def fits_get_info(any_input, keys=None, ext=None, instrument=None,
                        + ": WARNING: Datatype could not be determined."
                        )
 
-                _print_log_info(msg, logfile)
+                if not silent:
+                    _print_log_info(msg, logfile)
                 params[key] = fill_value
 
+        elif key == "PFOV":
+            if "HIERARCH ESO INS PFOV" in head:
+                params[key] = float(head["HIERARCH ESO INS PFOV"])
+            elif "HIERARCH ESO INS PIXSCALE" in head:
+                params[key] = float(head["HIERARCH ESO INS PIXSCALE"])
+            elif "CD2_2" in head:
+                params[key] = 3600*0.5*(np.abs(head["CD2_2"]) + np.abs(head["CD1_1"]))
+            else:
+                msg = (funname
+                       + ": WARNING: PFOV could not be determined."
+                       )
+
+                if not silent:
+                    _print_log_info(msg, logfile)
+                params[key] = fill_value
+
+
+        elif key in ["SEQ1 DIT", "DIT", "DET DIT"]:
+            if "HIERARCH ESO DET SEQ1 DIT" in head:
+                params[key] = head["HIERARCH ESO DET SEQ1 DIT"]
+            elif "HIERARCH ESO DET DIT" in head:
+                params[key] = head["HIERARCH ESO DET DIT"]
+            else:
+                msg = (funname
+                       + ": WARNING: DIT could not be determined."
+                       )
+
+                if not silent:
+                    _print_log_info(msg, logfile)
+                params[key] = fill_value
 
 
         # --- OK it is really not found so use a fill value

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.1.0"
+__version__ = "1.2.1"
 
 """
 HISTORY:
@@ -11,6 +11,9 @@ HISTORY:
     - 2020-02-12: no reduction of exposures with only one file, parameter
                   ignore_errors added, fixed bug for duplicate check, updated
                   error budget management
+    - 2020-06-19: sourceext added, overwrite for nowarn and noe, check for
+                  chopping params
+    - 2020-09-29: enforce dpro to be masked table
 
 
 NOTES:
@@ -27,7 +30,7 @@ import shutil
 import inspect
 from astropy.io import ascii
 from astropy.time import Time
-from astropy.table import MaskedColumn, Column
+from astropy.table import MaskedColumn, Column, Table
 
 from .duplicates_in_column import duplicates_in_column as _duplicates_in_column
 from .get_std_flux import get_std_flux as _get_std_flux
@@ -45,10 +48,11 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
                        obstype=None, mindate=None, seldate=None, maxdate=None,
                        box=None, chopsubmeth='averchop',
                        alignmethod='fastgauss', searcharea='chopthrow',
-                       searchsmooth=3, crossrefim=None,
+                       searchsmooth=0.2, crossrefim=None,
                        AA_pos=None, refpos=None, findbeams=True,
                        ditsoftaver=1, sky_xrange=None,
-                       sky_yrange=None, ignore_errors=False):
+                       sky_yrange=None, ignore_errors=False,
+                       sourceext='unknown', sigmaclip=None):
     """
     wrapper reduction loop routine: go over the selected observations and
     reduce them by combining the different nod files
@@ -80,6 +84,8 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
      - ignore_errors: (default=False) If set to True the reduction will continue
                       depsite the reduction of some individual exposures is
                       failing
+     - sourceext: (default ='unknown') expected extent of the source ('compact', 'extended', 'unknown')
+
 
     TO BE ADDED LATER:
         - correct treatment of HR and HRX SPC
@@ -120,6 +126,8 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
     dpro = ascii.read(ftabpro, header_start=0, delimiter=',',
                               guess=False)
 
+    dpro = Table(dpro, masked=True, copy=False)  # Convert to masked table
+
     # --- data table integrity checks
     dupl = _duplicates_in_column(table=dpro, colname='mjd')
     if dupl is None:
@@ -136,25 +144,32 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
     ntot = len(dpro)
 
     # --- add columns to product tabe for some basic object properties
-    newcols = ['BGmed',
-               'BGstd',
-               'GF_medBG',
-               'GF_peakampl',
-               'GF_totcnts',
-               'GF_majFWHM_as',
-               'GF_minFWHM_as',
-               'GF_posang',
-               'STDflux_Jy',
-               'GF_mJy/ADU/DIT',
-               'bestSN',
-               'sensit_mJy'
+    newcols = [['GF_x_px', float],
+               ['GF_y_px', float],
+               ['GF_RA_hms', object],
+               ['GF_DEC_dms', object],
+               ['GF_angdist_as', float],
+               ['all_beams_det', object],
+               ['BGmed', float],
+               ['BGstd', float],
+               ['GF_medBG', float],
+               ['GF_peakampl', float],
+               ['GF_totcnts', float],
+               ['GF_majFWHM_as', float],
+               ['GF_minFWHM_as', float],
+               ['GF_posang', float],
+               ['STDflux_Jy', float],
+               ['GF_mJy/ADU/DIT', float],
+               ['bestSN', float],
+               ['sensit_mJy', float]
                ]
 
     for newcol in newcols:
-        if newcol not in dpro.colnames:
-            dpro.add_column(MaskedColumn(np.ma.masked_all(ntot, dtype=float),
-                                         name=newcol))
+        if newcol[0] not in dpro.colnames:
+            dpro.add_column(MaskedColumn(np.ma.masked_all(ntot, dtype=newcol[1]),
+                                         name=newcol[0]))
             print("New Col added.")
+
 
     if not "nowarn" in dpro.colnames:
         nowarn = np.zeros(ntot, dtype=int)
@@ -267,8 +282,9 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
     if not os.path.exists(expfolder):
         os.makedirs(expfolder)
 
-    # --- total error counter
+    # --- total error and warning counter
     noe = 0
+    now = 0
 
     # --- loop over all the different exposures
     for i in range(nred):
@@ -289,13 +305,19 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
                 msg = " Continuing with next..."
                 _print_log_info(msg, logfile, logtime=False)
 
-        targ = dpro['targname'][tored[i]].replace(" ","").lstrip().rstrip()
+        targ = dpro['targname'][tored[i]].replace(" ","").replace("/","-").lstrip().rstrip()
         setup = dpro['setup'][tored[i]]
         date = dpro['dateobs'][tored[i]][0:19]
         insmode = dpro['insmode'][tored[i]]
         datatype = dpro['datatype'][tored[i]]
         nof = dpro['nof'][tored[i]]
         tempname = dpro['tempname'][tored[i]]
+        chopthrow = dpro['chopthrow'].filled(-999)[tored[i]]
+        chopangle = dpro['chopangle'].filled(-999)[tored[i]]
+
+        # --- reset errors and warnings for exposure
+        dpro["noerr"][tored[i]] = 0
+        dpro["nowarn"][tored[i]] = 0
 
         msg = ("\n"
                + "\n-------------------------------------------")
@@ -307,6 +329,8 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
                + "\n - Setup: " + str(setup)
                + "\n - Datatype: " + str(datatype)
                + "\n - Template name: " + str(tempname)
+               + "\n - Chop throw [as]: " + str(chopthrow)
+               + "\n - Chop angle [deg]: " + str(chopangle)
                + "\n - Date: " + str(date)
                + "\n - Number of raw files: " + str(nof)
                )
@@ -316,8 +340,18 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
 
         # --- if number of raw files is 1, there is nothing to do
         if nof < 2:
-            msg = " - Not enough raw files for further reduction! Continuing..."
+            msg = " - WARNING: Not enough raw files for further reduction! Continuing..."
             _print_log_info(msg, logfile, logtime=False)
+            now += 1
+            dpro["noerr"][tored[i]] = 1
+            continue
+
+        # --- if chopping information is missing nothing can be done either
+        if chopthrow < 0 or chopangle < 0:
+            msg = " - WARNING: Chopping information is missing! Continuing..."
+            _print_log_info(msg, logfile, logtime=False)
+            now += 1
+            dpro["noerr"][tored[i]] = 1
             continue
 
 
@@ -365,7 +399,7 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
             os.makedirs(subfold)
 
         try:
-            es = _reduce_exposure(draw=draw, dpro=dpro, expid=tored[i],
+            ws, es = _reduce_exposure(draw=draw, dpro=dpro, expid=tored[i],
                                  temprofolder=outfolder,
                                  outname=outname, rawfolder=infolder,
                                  outfolder=subfold, overwrite=overwrite,
@@ -378,11 +412,21 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
                                  statcalfolder=statcalfolder,
                                  ditsoftaver=ditsoftaver,sky_xrange=sky_xrange,
                                  sky_yrange=sky_yrange, debug=debug, plot=plot,
-                                 instrument=instrument, insmode=insmode)
+                                 instrument=instrument, insmode=insmode,
+                                 sourceext=sourceext, sigmaclip=sigmaclip)
 
-            noe = noe + es
+            msg = (funname + ": Number of warnings for exposure: " + str(ws))
+            _print_log_info(msg, logfile)
+
             msg = (funname + ": Number of errors for exposure: " + str(es))
             _print_log_info(msg, logfile)
+
+            dpro["nowarn"][tored[i]] = ws
+            dpro["noerr"][tored[i]] = es
+
+            # --- add to total number of errors for all run
+            now = now + ws
+            noe = noe + es
 
         except:
             e = sys.exc_info()
@@ -393,6 +437,8 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
             _print_log_info(msg, logfile)
 
             dpro['noerr'][tored[i]] = dpro['noerr'][tored[i]] + 1
+
+            noe += 1
 
             if not ignore_errors:
                 raise TypeError(msg)
@@ -406,6 +452,9 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
 
         # --- update the database file
         formats = {
+                   'GF_x_px': "%.1f",
+                   'GF_y_px': "%.1f",
+                   'GF_angdist_as' : "%.2f",
                    'GF_medBG' : "%.1f",
                    'GF_peakampl' : "%.1f",
                    'GF_totcnts' : "%.0f",
@@ -427,7 +476,7 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
                    overwrite=True)
 
     msg = (funname
-           + ": All reductions finished with total number of errors: "
-           + str(noe))
+           + ": All reductions finished with total number of warnings/errors: "
+           + str(now) + "/" + str(noe))
 
     _print_log_info(msg, logfile, empty=1)

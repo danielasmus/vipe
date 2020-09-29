@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 """
 USED BY:
@@ -10,6 +10,7 @@ USED BY:
 HISTORY:
     - 2020-01-23: created by Daniel Asmus
     - 2020-02-11: variable noddir renamed to noddir
+    - 2020-07-10: searchsmooth: change from px to arcsec
 
 
 NOTES:
@@ -699,7 +700,7 @@ def align_cube(box=None, ima=None, fin=None, ndit=None, superdit=None,
         - method='fastgauss' : method to be used for the fitting
         - verbose=False : print output if True
         - searchsmooth=3  : optional smoothing before attempting to fit the reference
-                      source
+                      source, given is the sigma in arcsec
         - plot=False : show plots if True (much slower, so mostly for debugging)
         - refim=None : optionally provide a reference image for fitting of the
                        reference source
@@ -1344,7 +1345,7 @@ def merge_reduced_cube(ima=None, fin=None, fout=None, head=None, ext=0,
 #%%
 # --- MAIN ROUTINE
 def reduce_burst_file(fin, outfolder='.', outname=None, logfile=None,
-                      offnodim=None, offnodfile=None, searchsmooth=3,
+                      offnodim=None, offnodfile=None, searchsmooth=0.2,
                       refim=None, reffile=None, box=None,
                       chopsubmeth='averchop', refpos=None, crossrefim=None,
                       AA_pos=None, alignmethod='fastgauss', verbose=False,
@@ -1406,10 +1407,14 @@ def reduce_burst_file(fin, outfolder='.', outname=None, logfile=None,
     # --- compute the maximum field of view from half of
     chopthrow = float(head["HIERARCH ESO TEL CHOP THROW"])
     pfov = float(head["HIERARCH ESO INS PFOV"])
+
     if not box:
         box = int(np.floor(chopthrow / pfov))
+
     msg = (" - Max box size: "+str(box))
     _print_log_info(msg, logfile)
+
+    searchsmooth /= pfov  # convert to px
 
     # --- chop subtraction ---
     msg = ("   - Subtract chops...")

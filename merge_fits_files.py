@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 """
 USED BY:
@@ -9,13 +9,16 @@ USED BY:
 
 HISTORY:
     - 2020-01-23: created by Daniel Asmus
+    - 2020-06-24: some basic support for ISAAC
 
 
 NOTES:
     -
 
 TO-DO:
-    -
+    - derotation fine-centering for images without central source
+    - more consistent treatment of WCS coordinates (not assuming central
+      source to have target coordinates)
 """
 import numpy as np
 from scipy import ndimage
@@ -28,6 +31,10 @@ from astropy.convolution import Gaussian2DKernel, interpolate_replace_nans
 
 from .crop_image import crop_image as _crop_image
 from .find_source import find_source as _find_source
+from .fits_get_info import fits_get_info as _fits_get_info
+
+from . import visir_params as _vp
+from . import isaac_params as _ip
 
 
 def merge_fits_files(infolder=None, infiles=None, suffix='', fout=None,
@@ -66,12 +73,22 @@ def merge_fits_files(infolder=None, infiles=None, suffix='', fout=None,
 
     if instrument == 'VISIR':
         if imgoffsetangle is None:
-            imgoffsetangle = 92.5
-        rotsense = 1  # for VISIR the ADA.POSANG is 360-PA
+            imgoffsetangle = _vp.imgoffsetangle
+            rotsense = _vp.rotsense
+            rotoffset = _vp.rotoffset
+
 
     elif (instrument == 'NAOS+CONICA') | (instrument == 'NACO'):
         imgoffsetangle = 0  # apparently correct?
-        rotsense = -1  # for NACO the ADA.POSANG really gives the PA
+        rotsense = -1  # for NACO the ADA.POSANG really gives the PA on sky
+        rotoffset = 0
+
+
+    elif instrument == "ISAAC":
+        imgoffsetangle = _ip.imgoffsetangle
+        rotsense = _ip.rotsense
+        rotoffset = _ip.rotoffset
+
 
     print('Found n potential files: ',nfiles)
 
@@ -102,6 +119,9 @@ def merge_fits_files(infolder=None, infiles=None, suffix='', fout=None,
         #     to the adapter/rotator
         if pupiltrack:
             rot = rot - imgoffsetangle
+
+
+        rot += rotoffset
 
         if verbose:
             print("MERGE_FITS_FILES: rot: ", rot)
@@ -199,6 +219,7 @@ def merge_fits_files(infolder=None, infiles=None, suffix='', fout=None,
         if "CTYPE1" in head0:
             if head0["CTYPE1"] == "RA---TAN":
                 if pfov is None:
+                    pfov = _
                     if "HIERARCH ESO INS PFOV" in head0:
                         pfov = float(head["HIERARCH ESO INS PFOV"])  # VISIR
                     else:

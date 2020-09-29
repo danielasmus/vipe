@@ -46,6 +46,7 @@ from .reduce_burst_file import reduce_burst_file
 from .reduce_exposure import reduce_exposure
 from .reduce_indi_raws import reduce_indi_raws
 from .reduce_obs import reduce_obs
+from .replace_hotpix import replace_hotpix
 from .select_rows import select_rows
 from .simple_image_plot import simple_image_plot
 from .simple_nod_exposure import simple_nod_exposure

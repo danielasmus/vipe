@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 """
 USED BY:
@@ -9,6 +9,8 @@ USED BY:
 
 HISTORY:
     - 2020-01-23: created by Daniel Asmus
+    - 2020-07-04: updated newest version of photutils (remove [0] in
+                  annul.to_mask and make optional variable error to a 2D array)
 
 
 NOTES:
@@ -57,7 +59,7 @@ def measure_sensit(fin=None, ext=0, im=None, pos=None, std=True, rmax=11,
     # --- define a sky annulus
     annul = CircularAnnulus((pos[1], pos[0]), r_in=sky_rin, r_out=sky_rout)
     # --- make a mask corresponding to the annulus
-    annul_mask = annul.to_mask(method='center')[0]
+    annul_mask = annul.to_mask(method='center')  # in older versions of the photutils a [0] is reqiured here
     # --- apply the annulus mask to the image
     annul_data = annul_mask.multiply(im)
     # --- extract the data from that annulus
@@ -65,8 +67,8 @@ def measure_sensit(fin=None, ext=0, im=None, pos=None, std=True, rmax=11,
     bgstd = np.nanstd(bg)
     bgmed = np.nanmedian(bg)
 
-    counts = [aperture_photometry(im, a, error=bgstd)['aperture_sum'][0] - bgmed * a.area() for a in apers]
-    ecnts = [aperture_photometry(im, a, error=bgstd)['aperture_sum_err'][0] for a in apers]
+    counts = [aperture_photometry(im, a, error=im*0+bgstd)['aperture_sum'][0] - bgmed * a.area for a in apers]
+    ecnts = [aperture_photometry(im, a, error=im*0+bgstd)['aperture_sum_err'][0] for a in apers]
 
 
     sn = np.array(counts)/np.array(ecnts)

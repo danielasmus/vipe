@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 """
 USED BY:
@@ -11,6 +11,7 @@ HISTORY:
     - 2020-01-15: created by Daniel Asmus
     - 2020-01-15: explicitely import local gaussfit
     - 2020-01-23: rename from get_pointsource to find_source
+    - 2020-06-17: add funname
 
 
 NOTES:
@@ -83,6 +84,8 @@ def find_source(im, guesspos=None, searchbox=None, fitbox=None,
 
     """
 
+    funname = "FIND_SOURCE"
+
     s2f = (2.0 * np.sqrt(2.0*np.log(2.0)))
     f2s = 1.0/s2f
 
@@ -98,15 +101,15 @@ def find_source(im, guesspos=None, searchbox=None, fitbox=None,
         guesspos = 0.5*np.array(s)
 
     if verbose:
-        print("GET_POINTSOURCE: method: ", method)
-        print("GET_POINTSOURCE: s: ", s)
-        print("GET_POINTSOURCE: sign: ", sign)
-        print("GET_POINTSOURCE: searchsmooth: ", searchsmooth)
-        print("GET_POINTSOURCE: guessmeth: ", guessmeth)
-        print("GET_POINTSOURCE: initial guessamp: ", guessamp)
-        print("GET_POINTSOURCE: initial guessbg: ", guessbg)
-        print("GET_POINTSOURCE: intial guesspos: ", guesspos)
-        print("GET_POINTSOURCE: intial searchbox: ", searchbox)
+        print(funname + ": method: ", method)
+        print(funname + ": s: ", s)
+        print(funname + ": sign: ", sign)
+        print(funname + ": searchsmooth: ", searchsmooth)
+        print(funname + ": guessmeth: ", guessmeth)
+        print(funname + ": initial guessamp: ", guessamp)
+        print(funname + ": initial guessbg: ", guessbg)
+        print(funname + ": intial guesspos: ", guesspos)
+        print(funname + ": intial searchbox: ", searchbox)
 
     # --- define the search box
     if searchbox is not None :
@@ -124,10 +127,10 @@ def find_source(im, guesspos=None, searchbox=None, fitbox=None,
         searchim = im[sy0:sy1, sx0:sx1]
 
         if verbose:
-            print("GET_POINTSOURCE: sy0, sy1, sx0, sx1 ", sy0, sy1, sx0, sx1)
+            print(funname + ": sy0, sy1, sx0, sx1 ", sy0, sy1, sx0, sx1)
         searchbox = np.array(np.shape(searchim))
 
-        # print("GET_POINTSOURCE: ss: ", np.shape(searchim))
+        # print(funname + ": ss: ", np.shape(searchim))
 
     else:
         searchbox = np.array(s, dtype=int)
@@ -136,7 +139,7 @@ def find_source(im, guesspos=None, searchbox=None, fitbox=None,
         searchim = im
 
     if verbose:
-        print("GET_POINTSOURCE: final searchbox: ", searchbox)
+        print(funname + ": final searchbox: ", searchbox)
 
     # --- should the first guess be based on the max or on the position?
     if guessmeth == 'max':
@@ -154,7 +157,7 @@ def find_source(im, guesspos=None, searchbox=None, fitbox=None,
                 plt.title('Smoothed Search image')
                 plt.show()
 
-            # print("GET_POINTSOURCE: guesspos: ", guesspos)
+            # print(funname + ": guesspos: ", guesspos)
 
         else:
             guesspos = np.array(np.unravel_index(np.nanargmax(searchim),
@@ -164,9 +167,9 @@ def find_source(im, guesspos=None, searchbox=None, fitbox=None,
         guesspos = 0.5*searchbox
 
     if verbose:
-        print("GET_POINTSOURCE: guesspos in searchbox: ", guesspos)
-        print("GET_POINTSOURCE: guesspos in total image: ", guesspos[0] + sy0, guesspos[1] + sx0)
-    # print("GET_POINTSOURCE: guesspos: ", guesspos)
+        print(funname + ": guesspos in searchbox: ", guesspos)
+        print(funname + ": guesspos in total image: ", guesspos[0] + sy0, guesspos[1] + sx0)
+    # print(funname + ": guesspos: ", guesspos)
 
     guesspos = np.array([guesspos[0] + sy0, guesspos[1] + sx0])
 
@@ -179,7 +182,7 @@ def find_source(im, guesspos=None, searchbox=None, fitbox=None,
         plt.show()
 
     if verbose:
-        print("GET_POINTSOURCE: intial fitbox: ", fitbox)
+        print(funname + ": intial fitbox: ", fitbox)
 
     # --- define the fit box
     if fitbox is not None:
@@ -228,8 +231,8 @@ def find_source(im, guesspos=None, searchbox=None, fitbox=None,
     fitbox = fs
 
     if verbose:
-        print("GET_POINTSOURCE: final fitbox: ", fitbox)
-        print("GET_POINTSOURCE: final guesspos in fitbox: ", guesspos)
+        print(funname + ": final fitbox: ", fitbox)
+        print(funname + ": final guesspos in fitbox: ", guesspos)
 
 
     if plot is True:
@@ -295,14 +298,14 @@ def find_source(im, guesspos=None, searchbox=None, fitbox=None,
              guesspos[0], sigma, sigma, 0]
 
     if verbose:
-        print(' - GET_POINTSOURCE: Guess: ', guess)
-        print(' - GET_POINTSOURCE: minFWHM: ', minFWHM)
-        print(' - GET_POINTSOURCE: maxFWHM: ', maxFWHM)
-        print(' - GET_POINTSOURCE: minsigma: ', minsigma)
-        print(' - GET_POINTSOURCE: maxsigma: ', maxsigma)
-        print(' - GET_POINTSOURCE: minamp: ', minamp)
-        print(' - GET_POINTSOURCE: maxamp: ', maxamp)
-        print(' - GET_POINTSOURCE: minx,maxx, miny,maxy: ', minx, maxx, miny, maxy)
+        print(' - Guess: ', guess)
+        print(' - minFWHM: ', minFWHM)
+        print(' - maxFWHM: ', maxFWHM)
+        print(' - minsigma: ', minsigma)
+        print(' - maxsigma: ', maxsigma)
+        print(' - minamp: ', minamp)
+        print(' - maxamp: ', maxamp)
+        print(' - minx,maxx, miny,maxy: ', minx, maxx, miny, maxy)
 
     y, x = np.mgrid[:fs[0], :fs[1]]
 
@@ -323,7 +326,7 @@ def find_source(im, guesspos=None, searchbox=None, fitbox=None,
 
     if np.isnan(fitim).any():
         if not silent:
-            print("GET_POINTSOURCE: WARNING: image to be cropped contains NaNs!")
+            print(funname + ": WARNING: image to be cropped contains NaNs!")
         fitim[np.isnan(fitim)] = guessbg  # set any NaNs to 0 for crop to work
 
     if ('mpfit' in method) :
@@ -423,7 +426,7 @@ def find_source(im, guesspos=None, searchbox=None, fitbox=None,
         # print(g_fit.x_stddev_0.fixed, g_fit.x_stddev_0.bounds)
 
     else:
-        print("GET_POINTSOURCE: ERROR: non-valid method requested: " + method
+        print(funname + ": ERROR: non-valid method requested: " + method
               +"\n returning None")
         return(None, None, None)
 
@@ -434,8 +437,8 @@ def find_source(im, guesspos=None, searchbox=None, fitbox=None,
         perrs[0] = bgstd
 
     if verbose:
-        print("GET_POINTSOURCE: uncorrected fit params: ", params)
-        print("GET_POINTSOURCE: uncorrected fit errs: ", perrs)
+        print(funname + ": uncorrected fit params: ", params)
+        print(funname + ": uncorrected fit errs: ", perrs)
 
     # --- compute the position in the total image and switch x and y to agree
     #     with the numpy convention

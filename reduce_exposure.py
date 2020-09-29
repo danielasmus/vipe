@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.2.0"
+__version__ = "2.0.1"
 
 """
 USED BY:
@@ -15,6 +15,11 @@ HISTORY:
     - 2020-02-12: change to simple_image_plot, fix truncated fits header
                   comments, bug in all_blind plot, updated error and warning
                   budget, added silent for get_std_flux
+    - 2020-06-25: ISAAC support and correct WCS treatment for source extraction
+    - 2020-07-09: fixed bug of wrong wheighting of double images. Creation of
+                  extract_beams subroutine
+    - 2020-09-29: Fix bug with bfound not defined for spectroscopy
+
 
 
 NOTES:
@@ -23,17 +28,32 @@ NOTES:
 TO-DO:
     - change the make_gallery calls to a simpler package internal routine and
       uncomment the corresponding section in the main routine below
-    - implement WCS for the extracted images
+    - WCS for the extracted images
+    - proper modification of the headers of the products
+    - optional North-up alignment for classical (non-burst) imaging
+    - fixed extraction for given WCS coordinates
+    - correct treatment of SPC ACQ data
+    - correct treatment of HR and HRX SPC
+    - callability as stand-alone routine
+    - replace RA,DEC in update_base_params to TEL TARG ALPHA/DELTA
+
+
 """
+
 import numpy as np
 from scipy.ndimage.filters import gaussian_filter
 import os
 import sys
 import traceback
+from copy import deepcopy
 from tqdm import tqdm
 from astropy.io import fits
 from astropy.stats import sigma_clip
+from astropy.wcs import WCS
+import astropy.units as u
+from astropy.coordinates.sky_coordinate import SkyCoord
 
+from .angular_distance import angular_distance as _angular_distance
 from .calc_beampos import calc_beampos as _calc_beampos
 from .crop_image import crop_image as _crop_image
 from .find_beam_pos import find_beam_pos as _find_beam_pos
@@ -46,8 +66,10 @@ from .print_log_info import print_log_info as _print_log_info
 from .simple_image_plot import simple_image_plot as _simple_image_plot
 # from .subtract_source import subtract_source as _subtract_source
 from .reduce_burst_file import reduce_burst_file as _reduce_burst_file
+from .replace_hotpix import replace_hotpix as _replace_hotpix
 from .undo_jitter import undo_jitter as _undo_jitter
 from . import visir_params as _vp
+from . import isaac_params as _ip
 
 def update_base_params(im, head, dpro, pfov, expid, fitbox=50, onlyhead=False):
 
@@ -69,6 +91,7 @@ def update_base_params(im, head, dpro, pfov, expid, fitbox=50, onlyhead=False):
     head["FIT-PA"] = (params[6], "Centr. sour. Gauss. position angle E of N [deg]")
 
     if not onlyhead:
+
         dpro['GF_medBG'][expid] = params[0]
         dpro['GF_peakampl'][expid] = params[1]
         dpro['GF_totcnts'][expid] = tot
@@ -96,13 +119,14 @@ def update_base_params(im, head, dpro, pfov, expid, fitbox=50, onlyhead=False):
         flux = None
 
     # --- compute the best S/N similar to  to ESO VISIR pipeline
-    try:
-        snbest, sens = _measure_sensit(im=im, flux=flux, showplot=False,
+    # try:
+    snbest, sens = _measure_sensit(im=im, flux=flux, showplot=False,
                                       std=std, exptime=exptime)
-    except:
-        snbest = np.ma.masked
-        sens = np.ma.masked
+    # except:
+        # snbest = np.ma.masked
+        # sens = np.ma.masked
 
+    print(snbest)
     head["BEST-SN"] = (snbest, "Best S/N of ESO-like aper phot")
     if not onlyhead:
         dpro['bestSN'][expid] = snbest
@@ -294,19 +318,375 @@ def reduce_burst_exp(logfile, filenames, rawfolder, burstfolder, ditsoftaver,
     return(noe)
 
 
+
+#%%
+# --- Helper routine to update the WCS fits header to the new crop
+def update_wcs(head, xpos_px, ypos_px, box):
+
+
+    wcs = WCS(head)
+
+    ra, dec = wcs.wcs_pix2world(xpos_px, ypos_px, 0)
+    coord = SkyCoord(ra=ra, dec=dec, unit=(u.deg, u.deg), frame='icrs')
+
+    newhead = deepcopy(head)
+
+    if not hasattr(box, "__len__"):
+        box = np.array([box, box], dtype=int)
+
+    sy, sx = box
+    # head["WCSAXES"] = 2
+    # head["CTYPE1"]  = 'RA---TAN'
+    # head["CTYPE2"]  = 'DEC--TAN'
+    newhead["CRPIX1"] = 0.5 * sx + 0.5
+    newhead["CRPIX2"] = 0.5 * sy + 0.5
+    newhead["CRVAL1"] = coord.ra.deg
+    newhead["CRVAL2"] = coord.dec.deg
+    # head["CD1_1"] = -pfov/3600.0
+    # head["CD1_2"] = 0
+    # head["CD2_2"] = pfov/3600.0
+    # head["CD2_1"] = 0
+
+    return(newhead)
+
+#%%
+# --- Helper routine to extract beams
+
+def extract_beams(nodims, beampos, box, noddir, head0,
+                  logfile, verbose, debug, outfolder, outbasename, suffix,
+                  nodalign=False, updatedb=False, dpro=None, fitparams=None,
+                  pfov=None, expid=None, onlyhead=False, maxshift=None,
+                  sigmaclip=None):
+
+    # === 4.1 Blind addition
+    # --- go over all nodding pairs and extract all the sub-images
+    #     first blindly
+    funname = "EXTRACT_BEAMS"
+    # nowarn = 0
+    noerr = 0
+
+
+    subims = []
+    # titles = []
+    nbeams = len(beampos[:,0])
+    nnods = len(nodims)
+
+
+    beamposstr = ""
+    for b in range(nbeams):
+        beamposstr = (beamposstr + "{:3.0f}".format(beampos[b,0]) + ", "
+                      + "{:3.0f}".format(beampos[b,1]) + " | ")
+
+    msg = (
+           " - No of beams: " + str(nbeams) + "\n" +
+           " - Beampos: " + beamposstr + "\n"
+           )
+
+    _print_log_info(msg, logfile)
+
+
+    # --- exclude beams that are not on the detector
+    s = np.shape(nodims[0])
+    use = np.full(nbeams, True)
+    beamsign = np.zeros(nbeams)
+
+    for k in range(nbeams):
+
+        beamsign[k] = (-1)**(np.ceil(0.5*k))
+
+        if ((beampos[k,0] >= s[0]) | (beampos[k,1] >= s[1])
+            | (beampos[k,0] <= 0) | (beampos[k,1] <= 0)):
+
+            msg = (" - Beampos not on frame: " +
+                   str(beampos[k,0]) + ', ' + str(beampos[k,1]) +
+                   ". Exclude...")
+
+            _print_log_info(msg, logfile)
+
+            use[k] = False
+
+    beampos = beampos[use,:]
+    beamsign = beamsign[use]
+    nbeams = len(beampos)
+
+    # --- make sure that at least one beam is on the detector
+    if nbeams == 0:
+
+        msg = (" - Error: No beam on detector: " +
+               str(beampos[k,0]) + ', ' + str(beampos[k,1]) +
+               ". Exiting...")
+
+        _print_log_info(msg, logfile)
+
+        return(noerr+1)
+
+
+    # --- for the case of fine-centred extraction
+    if nodalign:
+
+        # --- get the expected beam parameters from the fit
+        guessbg = fitparams[0]
+        guessamp = np.abs(fitparams[1])
+        guessFWHM = np.mean(fitparams[4:6])
+
+        minamp = 0.3*guessamp
+        minFWHM = 0.5*guessFWHM
+        maxFWHM = 2*guessFWHM
+
+        maxshift /= pfov  # maxshift in px
+
+        fitbox = int(np.max([6*guessFWHM,0.25*box]))
+
+        nexp = nnods*nbeams
+        nfound = 0
+
+
+        for j in tqdm(range(nnods)):
+            for k in range(nbeams):
+
+                try:
+                    params, _, _ = _find_source(nodims[j]*beamsign[k],
+                                                 guesspos=beampos[k,:],
+                                                 searchbox=box,
+                                                 fitbox=fitbox,
+                                                 method='mpfit',
+                                                 guessbg=guessbg,
+                                                 guessamp=guessamp,
+                                                 guessFWHM=guessFWHM,
+                                                 minamp=minamp,
+                                                 minFWHM=minFWHM,
+                                                 maxFWHM=maxFWHM)
+
+                except:
+
+                    if verbose:
+                        msg = (" - WARNING: Could not find source. Continuing...")
+
+                        _print_log_info(msg, logfile)
+
+                    # if dpro is not None:
+                    #     dpro['nowarn'][expid] = dpro['nowarn'][expid] + 1
+
+                    continue
+
+#                print('params: ', params)
+#                print('params[2:4]', params[2:4])
+#                print('beamsign: ', beamsign)
+#                print('box: ', box)
+#                print('i,j: ',i,j)
+
+                cim = _crop_image(nodims[j]*beamsign[k], box=box,
+                                           cenpos=params[2:4], silent=True)
+
+                dist = beampos[k,:] - params[2:4]
+
+                if verbose:
+                    msg = (" - Nod: " + str(j) + " Beam: " + str(k) +
+                           " Detected shift: " + str(dist)
+                           )
+
+                    _print_log_info(msg, logfile)
+
+
+                    bg_t = params[0]
+                    amp_t = params[1]
+                    fwhm_t = np.mean(params[4:6])
+                    axrat_t = np.max(params[4:6])/np.min(params[4:6])
+                    total_t = 0.25 * (np.pi * params[1] * params[4] * params[5])/np.log(2.0)
+                    angle_t = params[6]
+                    msg = (" - Found source params:\n" +
+                           "     - BG: "+  str(bg_t) + "\n" +
+                           "     - Amplitude: "+  str(amp_t) + "\n" +
+                           "     - Total: "+ str(total_t) + "\n" +
+                           "     - Aver. FWHM [px]: "+  str(fwhm_t) + "\n" +
+                           "     - Aver. FWHM [as]: "+  str(fwhm_t*pfov) + "\n" +
+                           "     - Maj./min axis: "+  str(axrat_t) + "\n" +
+                           "     - Angle: "+  str(angle_t)
+                          )
+
+                    _print_log_info(msg, logfile)
+
+
+                if np.sqrt(dist[0]**2 + dist[1]**2) > maxshift:
+
+                    if verbose:
+                        msg = (" - WARNING: shift too large! Exclude frame")
+                        _print_log_info(msg, logfile)
+                    # if dpro is not None:
+                    #     dpro['nowarn'][expid] = dpro['nowarn'][expid] + 1
+
+                    # noe = noe+1
+                    continue
+
+                # --- all double beams have to be halved but added twice
+                if (noddir == "PARALLEL") & (beamsign[k] > 0):
+                    subims.append(0.5*cim)
+                    subims.append(0.5*cim)
+                else:
+                    subims.append(cim)
+
+                nfound += 1
+                # titles.append("Nod: " + str(j) + " Beam: " + str(k))
+
+
+        msg = (funname +
+               ": Number of detected beams/expected: " + str(nfound) + "/" + str(nexp))
+        _print_log_info(msg, logfile)
+
+
+        # --- if object not detected in individual nods give warning
+        if nfound == 0:
+            msg = (funname +
+                   ": No source detected in the individual nods! Source probably too faint...")
+            _print_log_info(msg, logfile)
+
+            return(noerr+1)
+
+        # -- also if <50% of the beams were found abort reject the fine
+        #    tuned extraction and proceed with bling
+        elif nfound < 0.5 * nexp:
+            msg = (funname +
+                   ": <50% of the beams detected in individual nods! Source probably too faint... ")
+            _print_log_info(msg, logfile)
+
+            return(noerr+1)
+
+
+    # --- fixed extraction
+    else:
+
+        for j in tqdm(range(nnods)):
+            for k in range(nbeams):
+
+                cim = _crop_image(nodims[j]*beamsign[k], box=box,
+                                           cenpos=beampos[k,:], silent=True)
+
+                # --- all double beams have to be halved but added twice
+                if (noddir == "PARALLEL") & (beamsign[k] > 0):
+                    subims.append(0.5*cim)
+                    subims.append(0.5*cim)
+                else:
+                    subims.append(cim)
+
+
+
+    # --- update the WCS in the fits header
+    newhead = update_wcs(head0, beampos[0,1], beampos[0,0], box)
+
+    # --- write out
+    if debug:
+        fout = (outfolder + '/' + outbasename + '_all_extr_cube.fits')
+        fits.writeto(fout, subims, newhead, overwrite=True)
+
+#        fout = fout.replace(".fits", "_log.png")
+#        I.make_gallery(ims=subims, outname=fout, pfovs=pfov, log=True,
+#                       papercol=2, ncols=nbeams, cmap='gnuplot2', titles=titles,
+#                       inv=False, permin=40, permax=99.9, titcols='white')
+#
+#        fout = fout.replace("_log.png", "_lin.png")
+#        I.make_gallery(ims=subims, outname=fout, pfovs=pfov, log=False,
+#                       papercol=2, ncols=nbeams, cmap='gnuplot2', titles=titles,
+#                       inv=False, permin=40, permax=99.9, titcols='white')
+
+    # --- average all the sub-images
+    totim = np.nanmean(subims, axis=0)
+
+
+
+    # --- optional sigma clipping for the beam search
+    if sigmaclip is not None:
+        nrepl, totim = _replace_hotpix(totim, sigmathres=sigmaclip[0],
+                                    niters=sigmaclip[1], verbose=verbose)
+
+        msg = (funname + ": Number of replaced (hot) pixels: " + str(nrepl))
+        _print_log_info(msg, logfile)
+
+
+    if updatedb:
+
+        # --- position of the found source
+        tara = _fits_get_info(head0, keys="RA")
+        tadec = _fits_get_info(head0, keys="DEC")
+
+        wcs = WCS(head0)
+        ra, dec = wcs.wcs_pix2world(beampos[0,1], beampos[0,0], 0)
+        coord = SkyCoord(ra=ra, dec=dec, unit=(u.deg, u.deg), frame='icrs')
+
+
+        dpro['GF_x_px'][expid] = beampos[0,1]
+        dpro['GF_y_px'][expid] = beampos[0,0]
+        dpro['GF_RA_hms'][expid] = coord.to_string('hmsdms').split()[0]
+        dpro['GF_DEC_dms'][expid] = coord.to_string('hmsdms').split()[1]
+        dpro['GF_angdist_as'][expid] = _angular_distance(ra, dec, tara, tadec)
+
+
+        try:
+            update_base_params(totim, newhead, dpro, pfov, expid, onlyhead=onlyhead)
+        except:
+            e = sys.exc_info()
+            msg = (funname + ": ERROR: Failed to update base parameters: \n"
+                   + str(e[1]) + '' + str(traceback.print_tb(e[2])))
+            _print_log_info(msg, logfile)
+            noerr = noerr + 1
+
+    fout = (outfolder + '/' + outbasename + '_all_extr-' + suffix + '.fits')
+    fits.writeto(fout, totim, newhead, overwrite=True)
+
+    pout = fout.replace(".fits", "_log.png")
+    _simple_image_plot(totim, pout, scale="log", pfov=pfov, cenax=True)
+
+    pout = fout.replace(".fits", "_lin.png")
+
+    # --- if the source is probably faint, use lower colour thresholds
+    if suffix == "fixest" or suffix == "fix1det":
+        percentile = 1
+    else:
+        percentile = None
+
+    _simple_image_plot(totim, pout, pfov=pfov, cenax=True,
+                       percentile=percentile)
+
+    # --- to be uncommented once the make_gallery routine has been changed
+    # try:
+    #     fout = fout.replace(".fits", "_log.png")
+    #     I.make_gallery(ims=[totim], outname=fout, pfovs=pfov, log=True,
+    #                 papercol=1, ncols=1, cmap='gnuplot2',
+    #                 inv=False, permin=40, permax=99.9, latex=False)
+
+    #     fout = fout.replace("_log.png", "_lin.png")
+    #     I.make_gallery(ims=[totim], outname=fout, pfovs=pfov, log=False,
+    #                 papercol=1, ncols=1, cmap='gnuplot2',
+    #                 inv=False, permin=40, permax=99.9, latex=False)
+
+    # except:
+    #     e = sys.exc_info()
+    #     msg = (funname + ": ERROR:  Gallery plots failed to be created: \n"
+    #            + str(e[1]) + '' + str(traceback.print_tb(e[2])))
+    #     _print_log_info(msg, logfile)
+    #     noe = noe + 1
+
+
+    msg = " - Output written: " + fout
+    _print_log_info(msg, logfile)
+
+    return(noerr)
+
+
 #%%
 
 # === 3. DO THE REDUCTION OF INDIVIDUAL EXPOSURES
 def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
                     temprofolder=None, rawfolder=None, logfile=None,
                     outname='VISIR_OBS', outfolder='.', overwrite=False,
-                    maxshift=10, extract=True, searcharea='chopthrow',
+                    maxshift=0.5, extract=True, searcharea='chopthrow',
                     box=None, statcalfolder=None, crossrefim=None,
                     chopsubmeth='averchop', AA_pos=None, refpos=None,
                     alignmethod='fastgauss', findbeams=True,
-                    verbose=False, searchsmooth=3, ditsoftaver=1,
+                    verbose=False, ditsoftaver=1,
                     sky_xrange=None, plot=False, insmode=None,
-                    sky_yrange=None, debug=False, instrument=None):
+                    sky_yrange=None, debug=False, instrument=None,
+                    sourceext='unknown', searchsmooth=0.2,
+                    sigmaclip=[3,1]):
 
     """
     main reduction routine: reduce a give exposure by combining the nods,
@@ -322,9 +702,9 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
      - outname: (default='VISIR_OBS') name prefix for the logfile
      - outfolder: (default='.') folder to write output into
      - overwrite: (default=False) overwrite existing data?
-     - maxshift: (default=10) maximum allowed discrepany between expected and found beam
-                 position in a chop/nod pattern in pixel
-
+     - maxshift: (default=0.5) maximum allowed discrepany between expected and found beam
+                 position in a chop/nod pattern in arcsec
+     - searchsmooth: (default=0.2) sigma for Gaussian smoothing for beam detection in arcsecc
      - extract: (default=True) Try detect a source in the combined nod image and extract subimage
      - searcharea: (default='chopthrow') specify the area to search for the sub beam
      - box: (optional) by default the subimage will have the size of the chopthrow
@@ -334,6 +714,7 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
      - findbeams: (default: True) Should the code try to find the beam positions or just extract at the computed position?
      - alignmethod: (default='fastgauss') specify the fitting algorithm for the frame alignment in burst mode data
      - verbose = False
+     - sourceext: (default ='unknown') expected extent of the source ('compact', 'extended', 'unknown')
 
     NOT FULLY IMPLEMENTED:
      - call as a stand-alone routine, i.e., without providing draw and dpro
@@ -353,6 +734,11 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
         verbose = True
 
     noe = 0  # number of error counter
+    now = 0  # number of warnings
+
+    # --- flag whether only fits header or also table should be updated with
+    #     new Gaussian fit paramaters (will be set false after reducing a burst)
+    onlyhead = False
 
     if temprofolder is None:
         temprofolder = outfolder
@@ -394,12 +780,14 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
         if insmode is None:
             insmode = dpro["tempname"][expid].split("_")[0]
 
+
         targname = dpro["targname"][expid]
         datatype = dpro["datatype"][expid]
         tempname = dpro["tempname"][expid]
         setup = dpro["setup"][expid]
         pfov = dpro["pfov"][expid]
         chopthrow = dpro["chopthrow"][expid]
+        chopangle = dpro["chopangle"][expid]
         noddir = dpro["noddir"][expid]
     else:
         targname = None
@@ -417,14 +805,11 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
         filenames = draw['filename'][rid]
 
         # --- abort reduction if we have any corrput files
-        if 'CORRUPT' in draw['DATE-OBS'][rid]:
+        if 'CANNOT' in draw['INSTRUME'][rid]:
             msg = funname + ": ERROR: This observations contains corrupt files! Aborting..."
             _print_log_info(msg, logfile)
 
-            if dpro is not None:
-                dpro['noerr'][expid] = dpro['noerr'][expid] + 1
-
-            return(1)
+            return(now, noe+1)
 
         # # --- in addition we can get some
         # if tempname is None:
@@ -436,7 +821,7 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
     # --- or in case a sof file in esorex style is provided
     elif sof is not None:
         fsof = open(sof)
-        # --- implement extractio of the fits files here
+        # --- implement extraction of the fits files here
         # rawfiles =
 
 
@@ -454,9 +839,7 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
         msg = funname + ": ERROR: No corresponding raw files found! Aborting..."
         _print_log_info(msg, logfile)
 
-        if dpro is not None:
-            dpro['noerr'][expid] = dpro['noerr'][expid] + 1
-        return(1)
+        return(now, noe+1)
 
     # --- TO BE IMPLEMENTED: check if blindsums are available or whether this needs to be done
     # ....
@@ -493,6 +876,9 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
     if chopthrow is None:
         chopthrow = _fits_get_info(head0, "CHOP THROW")
 
+    if chopangle is None:
+        chopangle = _fits_get_info(head0, "CHOP ANGLE")
+
     if noddir is None:
         noddir = _fits_get_info(head0, "CHOPNOD DIR")
 
@@ -514,7 +900,8 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
         # --- first just check if the target is found in the calibrator table
         #     even if it was observed with a science template
         try:
-            flux = _get_std_flux(head0, logfile=logfile, silent=silent)
+            flux = _get_std_flux(head0, logfile=logfile, instrument=instrument,
+                                 silent=silent)
         except:
             flux = -1
 
@@ -527,11 +914,11 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
         # --- if it was not found but the observation was with a cal template
         #     raise en error
         elif should_be_cal:
-            msg = (funname + ": WARNING: target not found in flux reference table")
+            msg = (funname + ": WARNING: target not found in flux reference table but should be calibrator")
+
             _print_log_info(msg, logfile)
 
-            if dpro is not None:
-                dpro['nowarn'][expid] = dpro['nowarn'][expid] + 1
+            now += 1
 
             flux = -1
     else:
@@ -552,6 +939,7 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
             " - Data type: " + str(datatype) + "\n" +
             " - Nod direction: " + str(noddir) + "\n" +
             " - Chop throw [as]: " + str(chopthrow) + "\n" +
+            " - Chop angle [de]: " + str(chopangle) + "\n" +
             " - Max box size [px]: "+str(box)
             )
 
@@ -637,19 +1025,28 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
     nodims = np.array(nodims)
     nnods = len(nodims)
 
+    # --- check that we have at least one valid nodding pair
+    if nnods == 0:
+        msg = (funname + ": ERROR: No nodding pairs could be created! Aborting...")
+
+        _print_log_info(msg, logfile)
+
+        return(now, noe+1)
+
+
     # --- 2.1 do jitter correction
     if 'HIERARCH ESO SEQ JITTER WIDTH' in head0:
         if head0['HIERARCH ESO SEQ JITTER WIDTH'] > 0:
             for i in range(nnods):
                 # joff = V.compute_jitter(head=heads[iddd[m]])
                 # print("      - Nod no / jitter offs.: ",m,joff)
-                nodims[i] = _undo_jitter(ima=nodims[i], head=heads[i])
+                nodims[i] = _undo_jitter(im=nodims[i], head=heads[i])
 
     # msg = funname + ": 1. simple combination"
     # _print_log_info(msg, logfile)
 
-    totim = np.mean(nodims, axis=0)
-    fout = (outfolder + '/' + outnames[0] + '_all_blind.fits')
+    totim = np.nanmean(nodims, axis=0)
+    fout = (outfolder + '/' + outnames[0] + '_all_fullframe.fits')
 
     # --- if no specfic range is supplied to measure the sky use the full
     #     illuminated area of the VISIR detector
@@ -717,9 +1114,12 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
             if dpro is not None:
                 dpro['noerr'][expid] = dpro['noerr'][expid] + 1
 
+        onlyhead = True
+
 
 
     # === 4 Automatic source extraction for imaging
+    bfound = "N/A"
     if extract and insmode != 'SPC':
 
         # ---- WARNING: de-rotation for classical imaging with pupil tracking still to be implemented!
@@ -730,75 +1130,169 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
             msg = funname + ": Trying to detect beams in combined image..."
             _print_log_info(msg, logfile, empty=2)
 
-            beamsfound = True
             try:
-                beampos, fitparams = _find_beam_pos(im=totim, head=head0,
-                                                    searcharea=searcharea,
-                                                    fitbox=0.5*box,
-                                                    nodpos='both',
-                                                    verbose=verbose,
-                                                    AA_pos=AA_pos,
-                                                    plot=plot,
-                                                    instrument=instrument,
-                                                    insmode=insmode,
-                                                    logfile=logfile,
-                                                    chopthrow=chopthrow,
-                                                    noddir=noddir,
-                                                    filt=setup,
-                                                    pfov=pfov)
+               bfound, nowarn, beampos, fitparams = _find_beam_pos(
+                                  im=totim, head=head0, searcharea=searcharea,
+                                  fitbox=0.5*box, nodpos='both',
+                                  verbose=verbose, sourceext=sourceext,
+                                  AA_pos=AA_pos, plot=plot,
+                                  instrument=instrument, insmode=insmode,
+                                  logfile=logfile, chopthrow=chopthrow,
+                                  noddir=noddir, filt=setup, pfov=pfov,
+                                  searchsmooth=searchsmooth,
+                                  sigmaclip=sigmaclip)
+
+               now += nowarn
 
             except:
                 e = sys.exc_info()
                 msg = (funname + ": WARNING: Beam Position could not be found: \n"
-                       + str(e[1]) + ' ' + str(traceback.print_tb(e[2]))
-                       + "\nContinue assuming the positions...")
+                        + str(e[1]) + ' ' + str(traceback.print_tb(e[2]))
+                        + "\nContinue assuming the positions...")
                 _print_log_info(msg, logfile)
 
-                if dpro is not None:
-                        dpro['nowarn'][expid] = dpro['nowarn'][expid] + 1
 
-                beamsfound = False
+                bfound = "fail"
 
+            msg = funname + ": Result of beam search: " + bfound
+            _print_log_info(msg, logfile)
 
-            if beamsfound:
+            if bfound != "fail":
+
+                # --- retrieve the coordinates of the found position
+                wcs = WCS(head0)
+                bra, bdec = wcs.wcs_pix2world(beampos[0,1], beampos[0,0], 0)
+
+                bcoord = SkyCoord(ra=bra, dec=bdec, unit=(u.deg, u.deg),
+                                  frame='icrs')
+
+                tara = _fits_get_info(head0, keys="RA")
+                tadec = _fits_get_info(head0, keys="DEC")
+
+                angdist = _angular_distance(bra, bdec, tara, tadec)
 
                 nbeams = len(beampos)
                 bg = fitparams[0]
-                amp = np.abs(fitparams[1])
+                amp = fitparams[1]
                 fwhm = np.mean(fitparams[4:6])
                 axrat = np.max(fitparams[4:6])/np.min(fitparams[4:6])
                 total = 0.25 * (np.pi * fitparams[1] * fitparams[4] * fitparams[5])/np.log(2.0)
                 angle = fitparams[6]
-                msg = (" - Found source params:\n" +
+                msg = (funname + ":\n" +
+                       " - Expected source position: " +
+                       dpro["RA_hms"][expid] + " " + dpro["DEC_dms"][expid] + "\n" +
+                       " - Found source params:\n" +
+                       "     - Position x,y [px]: "+  '{:.1f}'.format(beampos[0,1])
+                               + "," + '{:.1f}'.format(beampos[0,0]) + "\n" +
+                       "     - Position [wcs]: "+ bcoord.to_string('hmsdms')  + "\n" +
+                       "     - Angular distance [as]: " + '{:.2f}'.format(angdist) +"\n" +
                        "     - BG: "+  str(bg) + "\n" +
                        "     - Amplitude: "+  str(amp) + "\n" +
                        "     - Total: "+ str(total) + "\n" +
                        "     - Aver. FWHM [px]: "+  str(fwhm) + "\n" +
-                       "     - Aver. FWHM [as]: "+  str(fwhm*pfov) + "\n" +
+                       "     - Aver. FWHM (min 0.3) [as]: "+  str(fwhm*pfov) + "\n" +
                        "     - Maj./min axis: "+  str(axrat) + "\n" +
                        "     - Angle: "+  str(angle)
                        )
 
                 _print_log_info(msg, logfile)
 
-                if -1 in beampos:
-                    msg = (funname + ": ERROR: Not all expected beams were found! No source extraction possible...")
-                    _print_log_info(msg, logfile)
 
-                    if dpro is not None:
-                        dpro['noerr'][expid] = dpro['noerr'][expid] + 1
+            else:
+                now += 1
 
-                    return(noe+1)
+        else:
+            bfound = "not tried"
 
-        # --- if beams are not found or looked for estimate their position
-        if not findbeams or not beamsfound:
+
+        # === If bright enough, try Fine-centered addition
+        # --- go over all nodding pairs and extract all the sub-images
+        if bfound == "first attempt" or bfound == "global fit":
+
+
+            msg = funname + ": Trying to detect and extract beams from individual nods..."
+            _print_log_info(msg, logfile, empty=2)
+
+            suffix = 'fine'
+
+            es = extract_beams(nodims, beampos, box, noddir, head0, logfile,
+                               verbose, debug, outfolder, outnames[0], suffix,
+                               nodalign=True, updatedb=True, dpro=dpro,
+                               pfov=pfov, fitparams=fitparams,
+                               maxshift=maxshift, sigmaclip=sigmaclip,
+                               expid=expid, onlyhead=onlyhead)
+
+        else:
+            es = 1
+
+        # ================= Fixed extraction, if necessary
+
+        # --- if a beam was detected do an extraction
+        if findbeams and bfound != "fail" and es > 0:
+
+
+            # --- first do some tests on fitted beams
+            s = np.shape(nodims[0])
+            use = np.full(nbeams, True)
+
+            for k in range(nbeams):
+
+                # --- first test that at least one of the beams is on the detector
+                if ((beampos[k,0] >= s[0]) | (beampos[k,1] >= s[1])
+                    | (beampos[k,0] <= 0) | (beampos[k,1] <= 0)):
+
+                    use[k] = False
+
+
+            # --- make sure that at least one beam is on the detector
+            if np.sum(use) == 0:
+
+                msg = (" - WARNING: None of fitted beams on detector! Using reference position...")
+
+                _print_log_info(msg, logfile)
+
+                now += 1
+
+                bfound = "fail"
+
+            else:
+
+                msg = (funname +
+                       ": Extracting beams from individual nods at found fixed position ...")
+
+                _print_log_info(msg, logfile, empty=1)
+
+            # --- label fits file depending on beam recovery mode/success:
+            if bfound == "first attempt" or bfound == "global fit" or bfound == "global smooth":
+                suffix = 'fixadet'
+            elif bfound == "only one found":
+                suffix = 'fix1det'
+
+
+            es = extract_beams(nodims, beampos, box, noddir, head0, logfile,
+                               verbose, debug, outfolder, outnames[0], suffix,
+                               updatedb=True, dpro=dpro, pfov=pfov,
+                               sigmaclip=sigmaclip,
+                               expid=expid, onlyhead=onlyhead)
+
+            noe += es
+
+
+        # --- if none or only 1 beam was, or we did not search, estimate their
+        #     position
+        if not findbeams or bfound == "fail" or bfound == "only one found":
 
             # --- compute the expected beam positions
+            msg = (funname + ": Extraction using reference positions for the beams...")
+
+            _print_log_info(msg, logfile)
+
+
             beampos = _calc_beampos(head=head0, verbose=verbose)
             nbeams = len(beampos)
-            fwhm = 7
-            bg = np.nanmedian(totim)
-            amp = np.nanmax(gaussian_filter(totim, sigma=3))
+            # fwhm = 7
+            # bg = np.nanmedian(totim)
+            # amp = np.nanmax(gaussian_filter(totim, sigma=3))
 
             # --- Modify the calculated positions in case the user provided the beam
             #     position of chop A nod A
@@ -809,323 +1303,31 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
                 beampos[:,1] = beampos[:,1] + xdif
                 beampos[:,0] = beampos[:,0] + ydif
 
-        subims = []
-        titles = []
 
-        beamposstr = ""
-        for b in range(nbeams):
-            beamposstr = (beamposstr + "{:3.0f}".format(beampos[b,0]) + ", "
-                          + "{:3.0f}".format(beampos[b,1]) + " | ")
+            suffix = 'fixest'
 
-        msg = (
-               " - No of beams: " + str(nbeams) + "\n" +
-               " - Beampos: " + beamposstr + "\n"
-               )
+            es = extract_beams(nodims, beampos, box, noddir, head0, logfile,
+                               verbose, debug, outfolder, outnames[0], suffix,
+                               updatedb=False, dpro=dpro, pfov=pfov,
+                               sigmaclip=sigmaclip,
+                               expid=expid, onlyhead=onlyhead)
 
-        _print_log_info(msg, logfile)
+            noe += es
 
-        # === 4.1 Blind addition
-        # --- go over all nodding pairs and extract all the sub-images
-        #     first blindly
-        msg = (funname +
-               ": Extracting beams from individual nods at fixed position ...")
 
-        _print_log_info(msg, logfile, empty=1)
+    if bfound == "first attempt" or bfound == "global fit" or bfound == "global smooth":
+        dpro['all_beams_det'][expid] = "T"
+    else:
+        dpro['all_beams_det'][expid] = "F"
 
-        for j in tqdm(range(nnods)):
-            for k in range(nbeams):
+    msg = (funname + ": Number of warnings for exposure: "
+           + str(now))
+    _print_log_info(msg, logfile, empty=1, screen=False)
 
-                # --- check that the beam is indeed on the detector
-                s = np.shape(nodims[j])
-                if ((beampos[k,0] > s[0]) | (beampos[k,1] > s[1])
-                    | (beampos[k,0] < 0) | (beampos[k,1] < 0)):
+    msg = (funname + ": Number of errors for exposure: "
+           + str(noe))
+    _print_log_info(msg, logfile, screen=False)
 
-                    if verbose:
-                        msg = (" - WARNING: Beampos not on frame: " +
-                               str(beampos[k,0]) + ', ' + str(beampos[k,1]) +
-                               ". Exclude...")
+    return(now, noe)
 
-                        _print_log_info(msg, logfile)
-
-                    if dpro is not None:
-                        dpro['nowarn'][expid] = dpro['nowarn'][expid] + 1
-
-                    continue
-
-                beamsign = (-1)**(np.ceil(0.5*k))
-
-                subims.append(_crop_image(nodims[j]*beamsign, box=box,
-                                           cenpos=beampos[k,:], silent=True)
-                              )
-
-                titles.append("Nod: " + str(j) + " Beam: " + str(k))
-
-        # --- write out
-        fout = (outfolder + '/' + outnames[0] + '_all_blind_extr_cube.fits')
-        fits.writeto(fout, subims, head0, overwrite=True)
-
-#        fout = fout.replace(".fits", "_log.png")
-#        I.make_gallery(ims=subims, outname=fout, pfovs=pfov, log=True,
-#                       papercol=2, ncols=nbeams, cmap='gnuplot2', titles=titles,
-#                       inv=False, permin=40, permax=99.9, titcols='white')
-#
-#        fout = fout.replace("_log.png", "_lin.png")
-#        I.make_gallery(ims=subims, outname=fout, pfovs=pfov, log=False,
-#                       papercol=2, ncols=nbeams, cmap='gnuplot2', titles=titles,
-#                       inv=False, permin=40, permax=99.9, titcols='white')
-
-        # --- take into account that in the case of parallel nodding the
-        #     the central image has to be counted double.
-        #     The first beam is always the double.
-        if noddir == "PARALLEL":
-            subims[0] = 0.5 * subims[0]
-            subims.append(subims[0])
-
-
-        totim = np.mean(subims, axis=0)
-
-        if datatype == "cycsum":
-            onlyhead = False
-        else:
-            onlyhead = True
-
-        try:
-            update_base_params(totim, head0, dpro, pfov, expid, onlyhead=onlyhead)
-        except:
-            e = sys.exc_info()
-            msg = (funname + ": ERROR: Failed to update base parameters: \n"
-                   + str(e[1]) + '' + str(traceback.print_tb(e[2])))
-            _print_log_info(msg, logfile)
-            noe = noe + 1
-            if dpro is not None:
-                dpro['noerr'][expid] = dpro['noerr'][expid] + 1
-
-        fout = (outfolder + '/' + outnames[0] + '_all_blind_extr.fits')
-        fits.writeto(fout, totim, head0, overwrite=True)
-
-        pout = fout.replace(".fits", "_log.png")
-        _simple_image_plot(totim, pout, scale="log", pfov=pfov, cenax=True)
-
-        pout = fout.replace(".fits", "_lin.png")
-        _simple_image_plot(totim, pout, pfov=pfov, cenax=True)
-
-        # --- to be uncommented once the make_gallery routine has been changed
-        # try:
-        #     fout = fout.replace(".fits", "_log.png")
-        #     I.make_gallery(ims=[totim], outname=fout, pfovs=pfov, log=True,
-        #                 papercol=1, ncols=1, cmap='gnuplot2',
-        #                 inv=False, permin=40, permax=99.9, latex=False)
-
-        #     fout = fout.replace("_log.png", "_lin.png")
-        #     I.make_gallery(ims=[totim], outname=fout, pfovs=pfov, log=False,
-        #                 papercol=1, ncols=1, cmap='gnuplot2',
-        #                 inv=False, permin=40, permax=99.9, latex=False)
-
-        # except:
-        #     e = sys.exc_info()
-        #     msg = (funname + ": ERROR:  Gallery plots failed to be created: \n"
-        #            + str(e[1]) + '' + str(traceback.print_tb(e[2])))
-        #     _print_log_info(msg, logfile)
-        #     noe = noe + 1
-
-
-        msg = " - Output written: " + fout
-        _print_log_info(msg, logfile)
-
-
-        # --- if no beams were found here we are done here
-        if not findbeams or not beamsfound:
-            return(noe)
-
-
-        # === 4.2 Optional Fine-centered addition
-        # --- go over all nodding pairs and extract all the sub-images
-        msg = funname + ": Trying to detect and extract beams from individual nods..."
-        _print_log_info(msg, logfile, empty=2)
-
-        subims = []
-        titles = []
-        for j in tqdm(range(nnods)):
-            for k in range(nbeams):
-
-
-                # --- check that the beam is indeed on the detector
-                s = np.shape(nodims[j])
-                if ((beampos[k,0] > s[0]) | (beampos[k,1] > s[1])
-                    | (beampos[k,0] < 0) | (beampos[k,1] < 0)):
-
-                    if verbose :
-                        msg = (" - WARNING: Beampos not on frame: " +
-                               str(beampos[k,0]) + ', ' + str(beampos[k,1]) +
-                               ". Exclude...")
-
-                        _print_log_info(msg, logfile)
-
-                    # if dpro is not None:
-                    #     dpro['nowarn'][expid] = dpro['nowarn'][expid] + 1
-
-                    continue
-
-
-
-                beamsign = (-1)**(np.ceil(0.5*k))
-
-                try:
-                    params, _, _ = _find_source(nodims[j]*beamsign,
-                                                 guesspos=beampos[k,:],
-                                                 searchbox=box,
-                                                 fitbox=int(np.max([6*fwhm,0.25*box])),
-                                                 method='mpfit',
-                                                 guessbg=bg, guessamp=amp,
-                                                 guessFWHM=fwhm,
-                                                 minamp=0.3*amp,
-                                                 minFWHM=0.5*fwhm,
-                                                 maxFWHM=2*fwhm)
-
-                except:
-
-                    if verbose:
-                        msg = (" - WARNING: Could not find source. Continuing...")
-
-                        _print_log_info(msg, logfile)
-
-                    # if dpro is not None:
-                    #     dpro['nowarn'][expid] = dpro['nowarn'][expid] + 1
-
-                    continue
-
-#                print('params: ', params)
-#                print('params[2:4]', params[2:4])
-#                print('beamsign: ', beamsign)
-#                print('box: ', box)
-#                print('i,j: ',i,j)
-
-                cim = _crop_image(nodims[j]*beamsign, box=box,
-                                           cenpos=params[2:4], silent=True)
-
-                dist = beampos[k,:] - params[2:4]
-
-                if verbose:
-                    msg = (" - Nod: " + str(j) + " Beam: " + str(k) +
-                           " Detected shift: " + str(dist)
-                           )
-
-                    _print_log_info(msg, logfile)
-
-
-                    bg = params[0]
-                    amp = np.abs(params[1])
-                    fwhm = np.mean(params[4:6])
-                    axrat = np.max(params[4:6])/np.min(params[4:6])
-                    total = 0.25 * (np.pi * params[1] * params[4] * params[5])/np.log(2.0)
-                    angle = params[6]
-                    msg = (" - Found source params:\n" +
-                           "     - BG: "+  str(bg) + "\n" +
-                           "     - Amplitude: "+  str(amp) + "\n" +
-                           "     - Total: "+ str(total) + "\n" +
-                           "     - Aver. FWHM [px]: "+  str(fwhm) + "\n" +
-                           "     - Aver. FWHM [as]: "+  str(fwhm*pfov) + "\n" +
-                           "     - Maj./min axis: "+  str(axrat) + "\n" +
-                           "     - Angle: "+  str(angle)
-                          )
-
-                    _print_log_info(msg, logfile)
-
-
-                if np.sqrt(dist[0]**2 + dist[1]**2) > maxshift:
-
-                    if verbose:
-                        msg = (" - WARNING: shift too large! Exclude frame")
-                        _print_log_info(msg, logfile)
-                    # if dpro is not None:
-                    #     dpro['nowarn'][expid] = dpro['nowarn'][expid] + 1
-
-                    # noe = noe+1
-                    continue
-
-                subims.append(cim)
-                titles.append("Nod: " + str(j) + " Beam: " + str(k))
-
-        # --- if object not detected in individual nods abort here
-        if len(subims) == 0:
-            msg = (funname +
-                   ": WARNING: No source detected in the individual nods! Exiting... ")
-            _print_log_info(msg, logfile)
-
-            if dpro is not None:
-                dpro['nowarn'][expid] = dpro['nowarn'][expid] + 1
-
-            return(noe)
-
-        # -- also if <50% of the beams were found abort
-        elif len(subims) < 0.5 * nnods * nbeams:
-            msg = (funname +
-                   ": WARNING: <50% of the beams detected in individual nods! Exiting... ")
-            _print_log_info(msg, logfile)
-
-            if dpro is not None:
-                dpro['nowarn'][expid] = dpro['nowarn'][expid] + 1
-
-            return(noe)
-
-        # --- id something is detected continued with writing out results
-        fout = (outfolder + '/' + outnames[0] + '_all_extr_cube.fits')
-        fits.writeto(fout, subims, head0, overwrite=True)
-
-#        fout = fout.replace(".fits", "_log.png")
-#        I.make_gallery(ims=subims, outname=fout, pfovs=pfov, log=True,
-#                       papercol=2, ncols=nbeams, cmap='gnuplot2', titles=titles,
-#                       inv=False, permin=40, permax=99.9, titcols='white')
-#
-#        fout = fout.replace("_log.png", "_lin.png")
-#        I.make_gallery(ims=subims, outname=fout, pfovs=pfov, log=False,
-#                       papercol=2, ncols=nbeams, cmap='gnuplot2', titles=titles,
-#                       inv=False, permin=40, permax=99.9, titcols='white')
-
-        if noddir == "PARALLEL":
-            subims[0] = 0.5 * subims[0]
-            subims.append(subims[0])
-
-        totim = np.mean(subims, axis=0)
-
-        update_base_params(totim, head0, dpro, pfov, expid, onlyhead=onlyhead)
-
-        fout = (outfolder + '/' + outnames[0] + '_all_extr.fits')
-        fits.writeto(fout, totim, head0, overwrite=True)
-
-
-
-        pout = fout.replace(".fits", "_log.png")
-        _simple_image_plot(totim, pout, scale="log", pfov=pfov, cenax=True)
-
-        pout = fout.replace(".fits", "_lin.png")
-        _simple_image_plot(totim, pout, pfov=pfov, cenax=True)
-
-        # --- to be uncommented once the make_gallery routine has been changed
-        # try:
-        #     fout = fout.replace(".fits", "_log.png")
-        #     I.make_gallery(ims=[totim], outname=fout, pfovs=pfov, log=True,
-        #                    papercol=1, ncols=1, cmap='gnuplot2',
-        #                    inv=False, permin=40, permax=99.9, latex=False)
-
-        #     fout = fout.replace("_log.png", "_lin.png")
-        #     I.make_gallery(ims=[totim], outname=fout, pfovs=pfov, log=False,
-        #                    papercol=1, ncols=1, cmap='gnuplot2',
-        #                    inv=False, permin=40, permax=99.9, latex=False)
-
-        #     msg = (" - Output written: " + fout)
-        #     _print_log_info(msg, logfile)
-
-
-        # except:
-        #     e = sys.exc_info()
-        #     msg = (funname + ": ERROR:  Gallery plots failed to be created: \n"
-        #            + str(e[1]) + '' + str(traceback.print_tb(e[2])))
-        #     _print_log_info(msg, logfile)
-        #     noe = noe + 1
-
-        msg = " - Output written: " + fout
-        _print_log_info(msg, logfile)
-
-    return(noe)
 

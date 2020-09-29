@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.2.0"
+__version__ = "1.4.1"
 
 """
 HISTORY:
@@ -10,6 +10,10 @@ HISTORY:
                   of fill values, now masked values are put into the pro table
     - 2020-02-13: comment out masked value check, fixed bug with mjd
                   comparison, added instrument keyword, added backup
+    - 2020-06-09: added ISAAC support
+    - 2020-06-22: added check for files with errors to be excluded
+    - 2020-07-06: add test for TPL_EXPNO being reset when identifying exposures
+                  & make sure all columns are always masked
 
 
 NOTES:
@@ -26,6 +30,7 @@ from astropy.io import ascii
 from astropy.table import Table, Column, MaskedColumn
 from astropy.stats import circmean, circvar
 from astropy import units as u
+from astropy.coordinates.sky_coordinate import SkyCoord
 
 from .duplicates_in_column import duplicates_in_column as _duplicates_in_column
 from .print_log_info import print_log_info as _print_log_info
@@ -169,8 +174,10 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
     cols = OrderedDict({
                   "expid": "{0:d}",
                   "targname": '{:s}',
-                  "ra": '{:.6f}',
-                  "dec": '{:.5f}',
+                  "RA_deg": '{:.6f}',
+                  "DEC_deg": '{:.5f}',
+                  "RA_hms": '{:s}',
+                  "DEC_dms": '{:s}',
                   "progid": '{:s}',
                   "obsid": "{0:d}",
                   "dateobs": '{:s}',
@@ -252,6 +259,23 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
     draw = ascii.read(ftabraw, header_start=0, delimiter=',',
                               guess=False)
 
+
+    # --- make all columns to MaskedColumns
+    draw = Table(draw, masked=True, copy=False)  # Convert to masked table
+
+    # --- throw out entries with ERRORS
+    ids = [j for j, s in enumerate(draw['INSTRUME']) if 'CANNOT' not in s]
+    nbad = len(draw) - len(ids)
+
+    if nbad > 0:
+        msg = (funname + ": WARNING: Number of raw files with errors: "
+               + str(nbad)
+               + " --> Excluding them...")
+
+        _print_log_info(msg, logfile)
+
+    draw = draw[ids]
+
     # --- data table integrity check
     dupl = _duplicates_in_column(table=draw, colname='MJD-OBS')
     if dupl is not None:
@@ -286,6 +310,8 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
             counter = counter + 1
         elif (draw['TPLNO'][i-1] != draw['TPLNO'][i]):
             counter = counter + 1
+        elif (draw['TPL_EXPNO'][i-1] >= draw['TPL_EXPNO'][i]):
+            counter = counter + 1
         elif (draw['TPL_EXPNO'][i-1] == draw['TPL_NEXP'][i-1]):
             counter = counter + 1
         elif (draw['MJD-OBS'][i] - draw['MJD-OBS'][i-1] > maxgap/60.0/24.0):
@@ -319,6 +345,9 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
         for col in dpro.itercols():
             if col.dtype.kind in 'SU':
                 dpro.replace_column(col.name, col.astype('object'))
+
+        # --- make all columns to MaskedColumns
+        dpro = Table(dpro, masked=True, copy=False)  # Convert to masked table
 
     # --- if the file not exists generate the empty table structure
     else:
@@ -389,7 +418,7 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
         # print(i,j, draw['CYCSUM'][j])
         if "Burst" in draw['TPL_ID'][j]:
             dpro["datatype"][id] = 'burst'
-        elif draw['CYCSUM'][j] == 'False':
+        elif (draw['CYCSUM'][j] == 'False') | (draw['CYCSUM'][j] == 'F'):
             dpro["datatype"][id] = 'halfcyc'
         else:
             dpro["datatype"][id] = 'cycsum'
@@ -403,20 +432,30 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
         if idg:
             dpro["grade"][id] = dg['grade'][idg[0]]
         else:
-            dpro["grade"][id] = "-"
+            dpro["grade"][id] = "N"
 
-        # --- fill in the other values
-        if draw['insmode'][j] == 'IMG':
-            dpro["setup"][id] = str(draw['INS_FILT1_NAME'][j])
-        elif draw['insmode'][j] == 'ACQ-SPC-SPC':
-            dpro["setup"][id] = str(draw['INS_FILT2_NAME'][j])
-        elif draw['insmode'][j] == 'ACQ-IMG-SPC':
-            dpro["setup"][id] = str(draw['INS_FILT1_NAME'][j])
-        elif draw['insmode'][j] == 'SPC':
-            dpro["setup"][id] = str(draw['INS_SLIT1_WID'][j])
-        else:
-            print(draw['insmode'][j])
-            raise ValueError()
+        # --- fill in the other values <--- would be better to get that from
+        #     fits_get_info in the future! For now hard-coded FILT3 for ISAAC
+        if draw['INSTRUME'][j] == "VISIR":
+            if draw['insmode'][j] == 'IMG':
+                dpro["setup"][id] = str(draw['INS_FILT1_NAME'][j])
+            elif draw['insmode'][j] == 'ACQ-SPC-SPC':
+                dpro["setup"][id] = str(draw['INS_FILT2_NAME'][j])
+            elif draw['insmode'][j] == 'ACQ-IMG-SPC':
+                dpro["setup"][id] = str(draw['INS_FILT1_NAME'][j])
+            elif draw['insmode'][j] == 'SPC':
+                dpro["setup"][id] = str(draw['INS_SLIT1_WID'][j])
+            else:
+                print(draw['insmode'][j])
+                raise ValueError()
+        elif draw['INSTRUME'][j] == "ISAAC":
+            if draw['insmode'][j] == 'IMG':
+                if draw['INS_FILT3_NAME'][j] != "open":
+                    dpro["setup"][id] = str(draw['INS_FILT3_NAME'][j])
+                else:
+                    dpro["setup"][id] = str(draw['INS_FILT4_NAME'][j])
+            elif draw['insmode'][j] == 'SPC':
+                dpro["setup"][id] = str(draw['INS_FILT3_NAME'][j])
 
         # --- if pupil tracking was used add that info to the mode
         if draw['ALTAZTRACK'][j] == 'True':
@@ -430,8 +469,13 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
             dpro["exptime"][id] = np.ma.masked
 
         dpro["targname"][id] = draw['TARG_NAME'][j]
-        dpro["ra"][id] = draw['RA'][j]
-        dpro["dec"][id] = draw['DEC'][j]
+        dpro["RA_deg"][id] = draw['RA'][j]
+        dpro["DEC_deg"][id] = draw['DEC'][j]
+
+        coord = SkyCoord(ra=draw['RA'][j], dec=draw['DEC'][j], unit=(u.deg, u.deg), frame='icrs')
+
+        dpro["RA_hms"][id] = coord.to_string('hmsdms').split()[0]
+        dpro["DEC_dms"][id] = coord.to_string('hmsdms').split()[1]
         dpro["progid"][id] = draw['PROG_ID'][j]
         dpro["obsid"][id] = draw['OBS_ID'][j]
         dpro["mjd"][id] = mjds[i]

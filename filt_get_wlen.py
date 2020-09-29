@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.1.0"
+__version__ = "2.0.0"
 
 """
 USED BY:
@@ -10,6 +10,7 @@ USED BY:
 HISTORY:
     - 2020-01-22: created by Daniel Asmus
     - 2020-02-10: implement upper case for all parameters
+    - 2020-06-11: add support for ISAAC
 
 
 NOTES:
@@ -20,6 +21,7 @@ TO-DO:
 """
 
 from . import visir_params as _vp
+from . import isaac_params as _ip
 
 def filt_get_wlen(filtname, instrument="VISIR", insmode="IMG"):
     """
@@ -39,3 +41,6 @@ def filt_get_wlen(filtname, instrument="VISIR", insmode="IMG"):
 
         elif "SPEC" in insmode or "SPC" in insmode :
             return(_vp.filtwlens[filtname+"_SPC"])
+
+    if instrument == "ISAAC":
+        return(_ip.filtwlens[filtname])

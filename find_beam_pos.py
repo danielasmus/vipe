@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.0.0"
+__version__ = "2.1.1"
 
 """
 USED BY:
@@ -9,6 +9,12 @@ USED BY:
 
 HISTORY:
     - 2020-01-23: created by Daniel Asmus
+    - 2020-06-18: some adaptations for ISAAC support
+    - 2020-06-19: add global smooth search and double-pos and bfound return
+    - 2020-07-08: implement use of logfile and warning logging, add
+                  minFWHM and maxFWHM as optional input parameter,
+                  add optional sigmaclip
+    - 2020-09-29: make sure that pfov is a float
 
 
 NOTES:
@@ -20,12 +26,17 @@ TO-DO:
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.path import Path
+from scipy.ndimage.filters import gaussian_filter
 from astropy.io import fits
 
+
+
 from .calc_beampos import calc_beampos as _calc_beampos
-from .diffraction_limit import diffraction_limit as _diffraction_limit
+# from .diffraction_limit import diffraction_limit as _diffraction_limit
 from .find_source import find_source as _find_source
 from .fits_get_info import fits_get_info as _fits_get_info
+from .print_log_info import print_log_info as _print_log_info
+from .replace_hotpix import replace_hotpix as _replace_hotpix
 
 
 # %%
@@ -71,6 +82,180 @@ def crosshair_marker(inner_r=0.5, pa = 0):
    return path
 
 
+#%%
+# --- helper routine to find other beam pos after finding one possible
+def find_other_beams(im, oldpos, exppos_new, nb, noddir, nodpos, searchbox,
+                     fitbox, maxFWHM, minFWHM, tol,
+                     verbose, plot, fitpos, logfile, searchsmooth):
+
+
+    funname = "FIND_OTHER_BEAMS"
+
+    s = np.shape(im)
+
+    dist = 0
+
+    # --- find out which beam the found one belongs to
+
+    # --- in case of PERPENDICULAR, it could be AA or BB:
+    if (noddir == 'PERPENDICULAR') & (nodpos == "both"):
+
+        # --- first assume that the beam is AA:
+        if (exppos_new[3,0] < s[0]) & (exppos_new[3,1] < s[1]):
+
+            if verbose:
+                msg = (funname + ": Test whether found beam is AA...")
+                _print_log_info(msg, logfile)
+
+            params, _, _ = _find_source(im, sign=1, fitbox=fitbox,
+                                             guesspos=exppos_new[3,:],
+                                             searchbox=searchbox,
+                                             plot=plot, verbose=verbose,
+                                             maxFWHM=maxFWHM,
+                                             method='mpfit',
+                                             minFWHM=minFWHM,
+                                             searchsmooth=searchsmooth
+                                             )
+
+            fitpos[3,:] = params[2:4]
+
+            dist = np.sqrt((fitpos[3,0] - exppos_new[3,0])**2 +
+                          (fitpos[3,1] - exppos_new[3,1])**2)
+
+            if verbose:
+               msg = (funname + ":  New expected pos: " + str(exppos_new[3,:])
+                      + "\n" + funname + ":  Beam found at: " + str(fitpos[3,:])
+                      + "\n" + funname + ":  Distance: " + str(dist)
+                      )
+               _print_log_info(msg, logfile)
+
+        # --- if in that case BB would be off-chip or the above fit failed
+        #     assume that BB was found
+        if ((exppos_new[3,0] > s[0]) | (exppos_new[3,1] > s[1])
+            | (dist > tol)):
+
+            if verbose and dist > tol:
+                msg = (funname +
+                       ": No beam found at expected position. Now assume found beam was BB...")
+
+                _print_log_info(msg, logfile)
+
+            elif verbose:
+                msg = (funname + ": Found beam seems to belong to BB. Try to find AA now...")
+
+                _print_log_info(msg, logfile)
+
+            exppos_new[3,:] = exppos_new[0,:]
+            dif = exppos_new[3,:] - oldpos[3,:]
+            exppos_new[0:3,:] = oldpos[0:3,:] + dif
+
+            params, _, _ = _find_source(im, sign=1, fitbox=fitbox,
+                                             guesspos=exppos_new[0,:],
+                                             searchbox=searchbox,
+                                             plot=plot, verbose=verbose,
+                                             maxFWHM=maxFWHM,
+                                             method='mpfit',
+                                             minFWHM=minFWHM)
+
+            fitpos[0,:] = params[2:4]
+
+            dist = np.sqrt((fitpos[0,0] - exppos_new[0,0])**2 +
+                          (fitpos[0,1] - exppos_new[0,1])**2)
+
+    # --- if PARALLEL or PERPENDICULAR & the found positions not deviating too much
+    if noddir == "PARALLEL" or dist <= tol:
+
+        # --- try again to get the exact beam positions
+        idond = np.where((exppos_new[:,0] > 0) & (exppos_new[:,0] < s[0]) & (exppos_new[:,1] > 0) & (exppos_new[:,1] < s[1]))[0]
+
+        nbond = len(idond)
+
+        idnond = []
+
+        if verbose:
+            msg =(funname +
+                  ": Number of beams expected to be on the detector: " +
+                  str(nbond)
+                  )
+            _print_log_info(msg, logfile)
+
+        for i in range(nb):
+
+            if i not in idond:
+                idnond.append(i)
+
+            else:
+                beamsign = (-1)**(np.ceil(0.5*i))
+    # print("beamsign: ",beamsign)
+
+                if verbose:
+                    msg = ("\n\n\n" + funname + ": Beam/sign: " + str(i)
+                           + ", " + str(beamsign))
+                    _print_log_info(msg, logfile)
+
+                params, _, _ = _find_source(im, sign=beamsign, fitbox=fitbox,
+                                     guesspos=exppos_new[i,:],
+                                     searchbox=searchbox, guessmeth='max',
+                                     method='mpfit',
+                                     plot=plot, verbose=verbose,
+                                     maxFWHM=maxFWHM, minFWHM=minFWHM)
+
+                fitpos[i,:] = params[2:4]
+
+                if i == 0:
+                    fitparams = params
+
+
+        if verbose:
+            msg = (funname + ": Fitted beam positions: " +str(fitpos[idond]))
+            _print_log_info(msg, logfile)
+
+        if nbond < nb:
+            avdif = np.mean(fitpos[idond] - oldpos[idond], axis=0)
+
+            for i in range(len(idnond)):
+                fitpos[idnond[i]] = oldpos[idnond[i]] + avdif
+
+
+        # --- check that the values could make sens:
+        difs = fitpos - exppos_new
+        if (np.std(difs[:,0]) > tol) | (np.std(difs[:,1]) > tol):
+            msg = (funname + ": ERROR: found positions not consistent with chop/nod pattern!")
+            _print_log_info(msg, logfile)
+            obfound  = "fail"
+
+        else:
+
+            if nbond == 1:
+                obfound = "one"
+            else:
+                obfound = "all"
+
+    return(obfound, fitpos, fitparams)
+
+#%% --- helper routine to check whether found beam can be valid
+# def validate_beams(im, beampos, amps, minamp):
+
+#     s = np.shape(im)
+#     nbeams = len(beampos[:,0])
+
+#     valid = np.full(nbeams, True)
+
+#     for k in range(nbeams):
+
+#         # --- first test that at least one of the beams is on the detector
+#         if ((beampos[k,0] >= s[0]) | (beampos[k,1] >= s[1])
+#             | (beampos[k,0] <= 0) | (beampos[k,1] <= 0)):
+
+#             valid[k] = False
+
+#         # --- test that the amplitude is higher than the min
+#         if np.abs(amps[k]) < minamp:
+#             valid[k] = False
+
+#     return(valid)
+
+
 
 #%%
 # --- main routine
@@ -78,14 +263,19 @@ def find_beam_pos(im=None, fin=None, ext=None, head=None, chopang=None,
                         chopthrow=None, noddir=None, refpix=None,
                         pfov=None, rotang=None, winx=None, winy=None,
                         fitbox=50, nodpos=None, AA_pos=None, verbose=False,
-                        sourceext='compact', filt=None, tol=10,
+                        sourceext='unknown', filt=None, tol=10,
                         searcharea='chopthrow', pupiltrack=False,
-                        imgoffsetangle=92.5, plot=False, tryglobal=True,
-                        logfile=None, instrument=None, insmode=None):
+                        imgoffsetangle=None, plot=False, tryglobal=True,
+                        logfile=None, instrument=None, insmode=None,
+                        minFWHM=None, maxFWHM=None, sigthres=1,
+                        searchsmooth=0.2, sigmaclip=[3,1]):
     """
     Find the beam positions in a given chop (nod) file by first computing where
-    they should be and then verifying by fit around these positions
+    they should be and then verifying by fit around these positions.
+    Optional input parameters minFWHM and maxFWHM are in arcsec.
     """
+
+    funname = "FIND_BEAM_POS"
 
     if head is None:
         hdu = fits.open(fin)
@@ -104,19 +294,38 @@ def find_beam_pos(im=None, fin=None, ext=None, head=None, chopang=None,
         insmode = _fits_get_info(head, "insmode")
 
     if pfov is None:
-        pfov = _fits_get_info(head, "pfov")
+        pfov = float(_fits_get_info(head, "pfov"))
 
     if filt is None:
         filt = _fits_get_info(head, "filt")
 
     if chopthrow is None:
-        chopthrow = _fits_get_info(head, "CHOP THROW")
+        chopthrow = float(_fits_get_info(head, "CHOP THROW"))
 
     if noddir is None:
         noddir = _fits_get_info(head, "CHOPNOD DIR")
 
     if nodpos is None:
-        nodpos = head['HIERARCH ESO SEQ NODPOS']
+        nodpos = _fits_get_info(head, "NODPOS")
+
+    # if dpro is not None and expid is not None:
+    #     nowarn = dpro["nowarn"][expid]
+    # else:
+    nowarn = 0
+
+    # --- sigma for the smoothing for beamsearch
+    searchsmooth /= pfov   # convert to pixel
+
+
+    # print("NOWARN: ", nowarn)
+
+    # --- optional sigma clipping for the beam search
+    if sigmaclip is not None:
+        nrepl, im = _replace_hotpix(im, sigmathres=sigmaclip[0],
+                                    niters=sigmaclip[1], verbose=verbose)
+
+        msg = (funname + ": Number of replaced (hot) pixels: " + str(nrepl))
+        _print_log_info(msg, logfile)
 
 
     # --- First compute the expected beam positions
@@ -136,42 +345,63 @@ def find_beam_pos(im=None, fin=None, ext=None, head=None, chopang=None,
         exppos[:,1] = exppos[:,1] + xdif
         exppos[:,0] = exppos[:,0] + ydif
 
-
-    # --- determine the maximum source extent if the source is compact
-    if sourceext == 'compact':
-        if filt is None:
-            if "HIERARCH ESO INS FILT1 NAME" in head:
-                filt = head["HIERARCH ESO INS FILT1 NAME"]
-            else:
-                filt = head["HIERARCH ESO INS FILT2 NAME"]
-
-        diflim = _diffraction_limit(filt, instrument=instrument,
-                                    insmode=insmode, pfov=pfov, unit="px",
-                                    logfile=logfile)
-        maxFWHM = 2*diflim
-        minFWHM = 0.8*diflim
+    if minFWHM is not None:
+        minFWHM = minFWHM/pfov   # convert from as to px
     else:
-        maxFWHM = None
-        minFWHM = None
+
+        # # --- determine minumum possible FWHM of astronomical source
+        # diflim = _diffraction_limit(filt, instrument=instrument,
+        #                             insmode=insmode, pfov=pfov, unit="px",
+        #                             logfile=logfile)
+
+
+        # minFWHM = 0.8*diflim
+
+        # --- for finding beams use a relatively high minFWHM
+        minFWHM = 0.3/pfov
+
+    if maxFWHM is not None:
+        maxFWHM = maxFWHM/pfov
+    else:
+
+        # --- determine the maximum FWHM depending on expected source extent
+        if sourceext == 'extended':
+            maxFWHM = None
+
+        else:
+            # --- if extent is compact or unknown assume a limit for now
+            # --- VISIR is always closish to the diffraction limit
+            if instrument == "VISIR":
+                maxFWHM = 1.0/pfov
+
+            # --- However, ISAAC is seeing limited
+            elif instrument == "ISAAC":
+                if "HIERARCH ESO TEL AMBI FWHM START" in head:
+                    seeing = head["HIERARCH ESO TEL AMBI FWHM START"]
+                else:
+                    seeing = 1.0
+
+                maxFWHM = seeing/pfov
+
+                # --- make sure maxFWHM is larger than minFWHM (sometimes DIMM is -1!)
+                if maxFWHM <= minFWHM:
+                    maxFWHM = np.min([1.0/pfov, minFWHM*2])
 
 
     if searcharea == "chopthrow":
-
-        # --- compute the maximum field of view from half of
-        if chopthrow is None:
-            chopthrow = float(head["HIERARCH ESO TEL CHOP THROW"])
-
-        if pfov is None:
-            pfov = float(head["HIERARCH ESO INS PFOV"])
-
         searchbox = chopthrow / pfov
 
     else:
         searchbox = None
 
     if verbose:
-            print(" - FIND_BEAM_POSITONS: Searchbox: ", searchbox)
-            print(" - FIND_BEAM_POSITONS: Fit box size: ", fitbox)
+           msg = (funname + ": Beam search parameters:\n " +
+                  " - Searchbox [px]: " + str(searchbox) + "\n" +
+                  " - Fit box size [px]: " + str(fitbox) + "\n" +
+                  " - min & max FWHM [px]: " + str(minFWHM) + ", " +
+                  str(maxFWHM)
+                  )
+           _print_log_info(msg, logfile)
 
     # --- decide which are the actual beams on the image to be found
     #     (for "both" all are used)
@@ -184,7 +414,8 @@ def find_beam_pos(im=None, fin=None, ext=None, head=None, chopang=None,
 
 
     if verbose:
-        print(" - FIND_BEAM_POSITONS: Expected beam positions: ",exppos)
+        msg = (" - Expected beam positions: " + str(exppos))
+        _print_log_info(msg, logfile)
 
     if plot:
         plt.imshow(im, origin="bottom", interpolation="nearest")
@@ -220,7 +451,11 @@ def find_beam_pos(im=None, fin=None, ext=None, head=None, chopang=None,
     idnond = []
 
     if nbond == 0:
-        print(" - FIND_BEAM_POSITONS: WARNING: no beam expected to be on the detector!")
+        msg = (funname + ": WARNING: no beam expected to be on the detector!")
+        _print_log_info(msg, logfile)
+
+        nowarn +=1
+
         doglobal = True
 
     else:
@@ -228,7 +463,9 @@ def find_beam_pos(im=None, fin=None, ext=None, head=None, chopang=None,
         doglobal = False
 
         if verbose:
-           print(" - FIND_BEAM_POSITONS: Number of beams expected to be on the detector: ", nbond)
+           msg = (funname + ": Number of beams expected to be on the detector: "
+                  + str(nbond))
+           _print_log_info(msg, logfile)
 
         for i in range(nb):
 
@@ -240,15 +477,17 @@ def find_beam_pos(im=None, fin=None, ext=None, head=None, chopang=None,
         # print("beamsign: ",beamsign)
 
                 if verbose:
-                    print("\n\n\n")
-                    print(" - FIND_BEAM_POSITONS: Beam/sign: ", i, beamsign )
+                    msg = ("\n\n\n" + funname + ": - Beam/sign: " + str(i)
+                           + ", " + str(beamsign))
+                    _print_log_info(msg, logfile)
 
                 params, _, _ = _find_source(im, sign=beamsign, fitbox=fitbox,
                                          guesspos=exppos[i,:],
                                          searchbox=searchbox, guessmeth='max',
                                          method='mpfit',
                                          plot=plot, verbose=verbose,
-                                         maxFWHM=maxFWHM, minFWHM=minFWHM)
+                                         maxFWHM=maxFWHM, minFWHM=minFWHM,
+                                         searchsmooth=searchsmooth)
 
         # plt.imshow(fit, origin='bottom')
         # plt.show()
@@ -257,12 +496,13 @@ def find_beam_pos(im=None, fin=None, ext=None, head=None, chopang=None,
         # print(i, type(fitpos), np.shape(fitpos), type(exppos), np.shape(exppos))
                 fitpos[i,:] = params[2:4]
 
-                #if i == 0:
-                fitparams = params
+                if i == 0:
+                    fitparams = params
 
 
         if verbose:
-            print(" - FIND_BEAM_POSITONS: Fitted beam positions: ", fitpos[idond])
+            msg = (funname + ": Fitted beam positions: " + str(fitpos[idond]))
+            _print_log_info(msg, logfile)
 
         if nbond < nb:
             avdif = np.mean(fitpos[idond] - exppos[idond], axis=0)
@@ -275,18 +515,30 @@ def find_beam_pos(im=None, fin=None, ext=None, head=None, chopang=None,
 
         # --- check that the values could make sens:
         difs = fitpos - exppos
-        if tryglobal & ((np.std(difs[:,0]) > tol) | (np.std(difs[:,1]) > tol)):
-            print(" - FIND_BEAM_POSITONS: WARNING: found positions not consistent with chop/nod pattern!")
 
-            doglobal = True
+        if ((np.std(difs[:,0]) > tol) | (np.std(difs[:,1]) > tol)):
+            msg = (funname + ": WARNING: found positions not consistent with chop/nod pattern!")
+            _print_log_info(msg, logfile)
 
+            nowarn += 1
+
+            if tryglobal:
+                doglobal = True
+
+        else:
+            bfound = "first attempt"
+
+    # --- if beams not at expected postion try to find them by fitting the full
+    #     frame
     if doglobal:
         # --- just fit the whole image to get the brightest beam
-        print(" - FIND_BEAM_POSITONS: Attempt global fit...")
+        msg = (funname + ": Attempting global fit...")
+        _print_log_info(msg, logfile)
 
-        # --- first rebin the image by 2x2 pix to increase signal and reduce
+        # --- first rebin the image to increase signal and reduce
         #     fitting duration
-        new_shape = [int(s[0]/4), int(s[1]/4)]
+        binsize = 4
+        new_shape = [int(s[0]/binsize), int(s[1]/binsize)]
         compression_pairs = [(d, c//d) for d,c in zip(new_shape, im.shape)]
         flattened = [l for p in compression_pairs for l in p]
         rim = im.reshape(flattened)
@@ -294,134 +546,166 @@ def find_beam_pos(im=None, fin=None, ext=None, head=None, chopang=None,
             op = getattr(rim, 'sum')
             rim = op(-1*(i+1))
 
+        if plot:
+            plt.imshow(im, origin="bottom", interpolation="nearest")
+            plt.title("Rebinned")
+            plt.show()
+
+        minFWHM_b = minFWHM/binsize
+
+        if sourceext == "compact":
+            maxFWHM_b = maxFWHM/binsize
+            searchsmooth_b = 0
+
+        else:
+            searchsmooth_b = searchsmooth/binsize
+            maxFWHM_b = maxFWHM
 
         params, _, _ = _find_source(rim, sign=1, plot=plot,
-                                         verbose=verbose, method='mpfit',
-                                         maxFWHM=maxFWHM, minFWHM=minFWHM)
+                                    searchsmooth=searchsmooth_b,
+                                    verbose=verbose, method='mpfit',
+                                    maxFWHM=maxFWHM_b, minFWHM=minFWHM_b)
 
 
         exppos_new = np.copy(exppos)
-        exppos_new[0,:] = 4.0*np.array(params[2:4])
-        dif = exppos_new[0,:] - exppos[0,:]
-        print(" - FIND_BEAM_POSITONS: Beam found at: ", exppos_new[0,:])
+        exppos_new[0,:] = binsize*np.array(params[2:4])
 
-        # --- assuming that the fit worked, find out which beam the fit
-        #     belongs to
-        # --- for parallel, it is easy
-        exppos_new[1:,:] = exppos[1:,:] + dif
-        dist = 0
-        # --- if we are in perpendicular the situation is more complicated
-        if (noddir == 'PERPENDICULAR') & (nodpos == "both"):
+        if ((exppos_new[0,0] >= s[0]) | (exppos_new[0,1] >= s[1])
+                    | (exppos_new[0,0] <= 0) | (exppos_new[0,1] <= 0)):
 
-            # --- first assume that the beam is AA:
-            if (exppos_new[3,0] < s[0]) & (exppos_new[3,1] < s[1]):
+            msg = (funname + ": WARNING: Beam candidate not on detetor: "
+                   + str(exppos_new[0,:]))
 
-                if verbose:
-                    print(" -  FIND_BEAM_POSITONS: Test whether found beam is AA...")
+            _print_log_info(msg, logfile)
 
-                params, _, _ = _find_source(im, sign=1, fitbox=fitbox,
-                                                 guesspos=exppos_new[3,:],
-                                                 searchbox=searchbox,
-                                                 plot=plot, verbose=verbose,
-                                                 maxFWHM=maxFWHM,
-                                                 method='mpfit',
-                                                 minFWHM=minFWHM)
+            nowarn += 1
 
-                fitpos[3,:] = params[2:4]
+            bfound = "fail"
 
-                dist = np.sqrt((fitpos[3,0] - exppos_new[3,0])**2 +
-                              (fitpos[3,1] - exppos_new[3,1])**2)
-
-                if verbose:
-                   print(" -  FIND_BEAM_POSITONS:  New expected pos: ", exppos_new[3,:])
-                   print(" -  FIND_BEAM_POSITONS:  Beam found at: ", fitpos[3,:])
-                   print(" -  FIND_BEAM_POSITONS:  Distance: ", dist)
-
-            # --- if in that case BB would be off-chip or the above fit failed
-            #     assume that BB was found
-            if ((exppos_new[3,0] > s[0]) | (exppos_new[3,1] > s[1])
-                | (dist > tol)):
-
-                if verbose and dist > tol:
-                    print(" -  FIND_BEAM_POSITONS: No beam found at expected position. Now assume found beam was BB...")
-                elif verbose:
-                    print(" -  FIND_BEAM_POSITONS: Found beam seems to belong to BB. Try to find AA now...")
-
-
-                exppos_new[3,:] = exppos_new[0,:]
-                dif = exppos_new[3,:] - exppos[3,:]
-                exppos_new[0:3,:] = exppos[0:3,:] + dif
-
-                params, _, _ = _find_source(im, sign=1, fitbox=fitbox,
-                                                 guesspos=exppos_new[0,:],
-                                                 searchbox=searchbox,
-                                                 plot=plot, verbose=verbose,
-                                                 maxFWHM=maxFWHM,
-                                                 method='mpfit',
-                                                 minFWHM=minFWHM)
-
-                fitpos[0,:] = params[2:4]
-
-                dist = np.sqrt((fitpos[0,0] - exppos_new[0,0])**2 +
-                              (fitpos[0,1] - exppos_new[0,1])**2)
-
-        # --- if the found position is deviating too much,  look
-        if dist > tol:
-            print(" -  FIND_BEAM_POSITONS: ERROR beams not found! Return -1")
-            fitpos[:,:] = -1
         else:
 
-            # --- try again to get the exact beam positions
-            idond = np.where((exppos_new[:,0] > 0) & (exppos_new[:,0] < s[0]) & (exppos_new[:,1] > 0) & (exppos_new[:,1] < s[1]))[0]
+            dif = exppos_new[0,:] - exppos[0,:]
+            msg = (funname + ": Possible beam found at: " + str(exppos_new[0,:]))
+            _print_log_info(msg, logfile)
 
-            nbond = len(idond)
+            exppos_new[1:,:] = exppos[1:,:] + dif
 
-            idnond = []
+            # --- now check if other beams can be found
+            obfound, fitpos, fitparams = find_other_beams(im, exppos, exppos_new,
+                                                          nb, noddir, nodpos,
+                                                          searchbox, fitbox,
+                                                          maxFWHM, minFWHM, tol,
+                                                          verbose, plot, fitpos,
+                                                          logfile,
+                                                          searchsmooth=searchsmooth)
 
-            if verbose:
-                print(" - FIND_BEAM_POSITONS: Number of beams expected to be on the detector: ", nbond)
+            if obfound == "all":
+                bfound = "global fit"
+            elif obfound == "one":
+                bfound = "only one found"
+            else:
+                bfound = "fail"
 
-            for i in range(nb):
+                msg = (funname
+                       + ": WARNING: found positions not consistent with chop/nod pattern: "
+                       + str(fitpos))
+                _print_log_info(msg, logfile)
 
-                if i not in idond:
-                    idnond.append(i)
+                nowarn += 1
 
-                else:
-                    beamsign = (-1)**(np.ceil(0.5*i))
-        # print("beamsign: ",beamsign)
+        # --- in case this did not work, try again with smoothed and no maxFWHM
+        if bfound == "fail":
 
-                    if verbose:
-                        print("\n\n\n")
-                        print(" - FIND_BEAM_POSITONS: Beam/sign: ", i, beamsign )
+            if searchsmooth > 0:
 
-                    params, _, _ = _find_source(im, sign=beamsign, fitbox=fitbox,
-                                         guesspos=exppos_new[i,:],
-                                         searchbox=searchbox, guessmeth='max',
-                                         method='mpfit',
-                                         plot=plot, verbose=verbose,
-                                         maxFWHM=maxFWHM, minFWHM=minFWHM)
+                msg = (funname + ": Attempting global smoothed fit...")
+                _print_log_info(msg, logfile)
 
-                    fitpos[i,:] = params[2:4]
+                if sourceext == "compact":
+                    maxFWHM_b = 2*maxFWHM_b
+
+                # --- smooth the image with a FWHM~0.5" Gauss kernel
+                sim = gaussian_filter(im, sigma=searchsmooth, mode='nearest')
+                srim = gaussian_filter(rim, sigma=searchsmooth/binsize, mode='nearest')
 
 
+                fitparams, _, _ = _find_source(srim, sign=1, plot=plot,
+                                                 verbose=verbose, method='mpfit',
+                                                 maxFWHM=maxFWHM_b, minFWHM=minFWHM_b)
+
+
+            # --- if no smoothed search is wished, use the solution from the
+            #     binned global search above
+            else:
+                fitparams = params
+                sim = im
+
+            # --- revert values to unbinned
+            fitparams[0] /= binsize
+            fitparams[1] /= binsize
+            fitparams[2] *= binsize
+            fitparams[3] *= binsize
+            fitparams[4] *= binsize
+            fitparams[5] *= binsize
+
+            exppos_new = np.copy(exppos)
+            exppos_new[0,:] = fitparams[2:4]
+
+            # --- test if the one found seems valid
+            # --- first test that at least one of the beams is on the detector
+            if ((exppos_new[0,0] >= s[0]) | (exppos_new[0,1] >= s[1])
+                | (exppos_new[0,0] <= 0) | (exppos_new[0,1] <= 0)):
+
+                msg = (funname + ": ERROR: Beam candidate not on detector: " + str(exppos_new[0,:]))
+                _print_log_info(msg, logfile)
+
+                bfound = "fail"
+
+            # --- test that the amplitude is higher than the min
+            elif fitparams[1] < sigthres * np.nanstd(im[int(0.25*s[0]):int(0.75*s[0]), int(0.25*s[1]):int(0.75*s[1])]):
+
+                msg = (funname + ": ERROR: Beam amplitude too small: "
+                       + str(fitparams[1]))
+                _print_log_info(msg, logfile)
+
+                bfound = "fail"
+
+            else:
+                dif = exppos_new[0,:] - exppos[0,:]
+                msg = (funname + ": Possible beam found at: " +
+                       str(exppos_new[0,:]))
+                _print_log_info(msg, logfile)
+
+                exppos_new[1:,:] = exppos[1:,:] + dif
+
+                if sourceext == "compact":
+                    searchsmooth = 0
+                elif sourceext != "extended":
+                    searchsmooth = 0.5*searchsmooth
+
+                # --- now check if other beams can be found
+                obfound, fitpos, params = find_other_beams(sim, exppos, exppos_new,
+                                                              nb, noddir, nodpos,
+                                                              searchbox, fitbox,
+                                                              maxFWHM, minFWHM, tol,
+                                                              verbose, plot, fitpos,
+                                                              logfile,
+                                                              searchsmooth=searchsmooth)
+
+                if obfound == "all":
+                    bfound = "global smooth"
                     fitparams = params
+                else:
+                    print(funname + ": WARNING: other beams not found! Using positions based on first...")
+                    bfound = "only one found"
+                    fitpos = exppos_new
+                    nowarn += 1
 
 
-            if verbose:
-                print(" - FIND_BEAM_POSITONS: Fitted beam positions: ", fitpos[idond])
+    # if dpro is not None and expid is not None:
+    #     dpro["nowarn"][expid] = nowarn
 
-            if nbond < nb:
-                avdif = np.mean(fitpos[idond] - exppos[idond], axis=0)
+    # print("NOWARN: ", nowarn)
 
-                for i in range(len(idnond)):
-                    fitpos[idnond[i]] = exppos[idnond[i]] + avdif
-
-
-            # --- check that the values could make sens:
-            difs = fitpos - exppos_new
-            if (np.std(difs[:,0]) > tol) | (np.std(difs[:,1]) > tol):
-                print(" - FIND_BEAM_POSITONS: ERROR: found positions still not consistent with chop/nod pattern! Returning -1")
-                fitpos[:,:] = -1
-
-    return(fitpos, fitparams)
+    return(bfound, nowarn, fitpos, fitparams)
 
