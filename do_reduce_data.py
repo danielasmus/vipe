@@ -19,7 +19,7 @@ overwrite = False
 justtable = False
 
 maxgap = 5
-maxshift = 10
+maxshift = 0.5
 instrument = "VISIR"
 selobj = None
 selexp = None
@@ -53,6 +53,18 @@ refpos=None
 findbeams = True
 debug = False
 ignore_errors=False
+sourceext = "unknown"
+# sourceext = "extended"
+searchsmooth = 0
+# sourceext = "compact"
+# searchsmooth = 0
+# searchsmooth = 0.4
+# findbeams = False
+sigmaclip = None
+# sigmaclip = [3,2]
+# sigmaclip = [2,2]
+# sigmaclip = [3,1]
+
 
 
 
@@ -88,6 +100,7 @@ V.reduce_obs(ftabraw, ftabpro, infolder, outfolder, maxshift=maxshift,
                       box=box, overwrite=overwrite, alignmethod=alignmethod,
                       searcharea=searcharea, AA_pos=AA_pos, refpos=refpos,
                       findbeams=findbeams, instrument=instrument,
-                      ignore_errors=ignore_errors)
+                      ignore_errors=ignore_errors, sourceext=sourceext,
+                      searchsmooth=searchsmooth, sigmaclip=sigmaclip)
 
 

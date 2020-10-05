@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "2.1.1"
+__version__ = "2.2.0"
 
 """
 USED BY:
@@ -15,6 +15,8 @@ HISTORY:
                   minFWHM and maxFWHM as optional input parameter,
                   add optional sigmaclip
     - 2020-09-29: make sure that pfov is a float
+    - 2020-10-05: bugfix of non-defined fitparams and obfound,
+                  add custom searcharea in arcsec
 
 
 NOTES:
@@ -94,6 +96,7 @@ def find_other_beams(im, oldpos, exppos_new, nb, noddir, nodpos, searchbox,
     s = np.shape(im)
 
     dist = 0
+    fitparams = None
 
     # --- find out which beam the found one belongs to
 
@@ -202,7 +205,7 @@ def find_other_beams(im, oldpos, exppos_new, nb, noddir, nodpos, searchbox,
 
                 fitpos[i,:] = params[2:4]
 
-                if i == 0:
+                if fitparams is None:
                     fitparams = params
 
 
@@ -230,6 +233,10 @@ def find_other_beams(im, oldpos, exppos_new, nb, noddir, nodpos, searchbox,
                 obfound = "one"
             else:
                 obfound = "all"
+
+    else:
+        obfound  = "fail"
+
 
     return(obfound, fitpos, fitparams)
 
@@ -391,6 +398,9 @@ def find_beam_pos(im=None, fin=None, ext=None, head=None, chopang=None,
     if searcharea == "chopthrow":
         searchbox = chopthrow / pfov
 
+    elif "arcsec" in searcharea:
+        searchbox = float(searcharea.split("arcsec")[0]) / pfov
+
     else:
         searchbox = None
 
@@ -438,6 +448,7 @@ def find_beam_pos(im=None, fin=None, ext=None, head=None, chopang=None,
 
     # --- Now do a fitting to get the positions accurately
     fitpos = np.copy(exppos)
+    fitparams = None
     nb = len(fitpos[:,0])
 
     s = np.array(np.shape(im))
@@ -496,7 +507,7 @@ def find_beam_pos(im=None, fin=None, ext=None, head=None, chopang=None,
         # print(i, type(fitpos), np.shape(fitpos), type(exppos), np.shape(exppos))
                 fitpos[i,:] = params[2:4]
 
-                if i == 0:
+                if fitparams is None:
                     fitparams = params
 
 

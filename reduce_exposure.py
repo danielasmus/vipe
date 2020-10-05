@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "2.0.1"
+__version__ = "2.1.0"
 
 """
 USED BY:
@@ -19,6 +19,8 @@ HISTORY:
     - 2020-07-09: fixed bug of wrong wheighting of double images. Creation of
                   extract_beams subroutine
     - 2020-09-29: Fix bug with bfound not defined for spectroscopy
+    - 2020-10-05: provide maxshift as tolerance for beam find,
+                  add custom searcharea in arcsec
 
 
 
@@ -706,7 +708,7 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
                  position in a chop/nod pattern in arcsec
      - searchsmooth: (default=0.2) sigma for Gaussian smoothing for beam detection in arcsecc
      - extract: (default=True) Try detect a source in the combined nod image and extract subimage
-     - searcharea: (default='chopthrow') specify the area to search for the sub beam
+     - searcharea: (default='chopthrow') specify the area to search for the sub beam as string in arcsec (e.g., "2 arcsec")
      - box: (optional) by default the subimage will have the size of the chopthrow
      - chopsubmeth: (default='averchop') method for the subtraction of the chops in burst mode. By default the average of the exposures in the offset position of the corresponding pair is used.
      - AA_pos: (optional) specify position of the beam in chop/nod position AA for burst alignment
@@ -1135,7 +1137,7 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
                                   im=totim, head=head0, searcharea=searcharea,
                                   fitbox=0.5*box, nodpos='both',
                                   verbose=verbose, sourceext=sourceext,
-                                  AA_pos=AA_pos, plot=plot,
+                                  AA_pos=AA_pos, plot=plot, tol=maxshift/pfov,
                                   instrument=instrument, insmode=insmode,
                                   logfile=logfile, chopthrow=chopthrow,
                                   noddir=noddir, filt=setup, pfov=pfov,

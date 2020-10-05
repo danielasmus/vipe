@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 
 """
 HISTORY:
@@ -14,6 +14,8 @@ HISTORY:
     - 2020-06-22: added check for files with errors to be excluded
     - 2020-07-06: add test for TPL_EXPNO being reset when identifying exposures
                   & make sure all columns are always masked
+    - 2020-10-05: bugfix of object columns having wrong fill values for new rows
+                  in dpro
 
 
 NOTES:
@@ -337,8 +339,7 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
     if os.path.isfile(ftabpro) and not overwrite:
 
         new = False
-        dpro = ascii.read(ftabpro, header_start=0, delimiter=',',
-                              guess=False)
+        dpro = ascii.read(ftabpro)
 
         # --- change all string columns to object type so that their string
         #     length becomes variable
@@ -379,6 +380,12 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
             if len(id) == 0:
                 dpro.add_row()
                 id = len(dpro)-1
+
+                # --- make sure that the columns have fill values of the right type
+                for c in dpro.colnames:
+                    if dpro[c].dtype == "object":
+                        dpro[c][id] = ""
+
             else:
                 id = id[0]
 
