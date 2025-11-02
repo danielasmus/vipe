@@ -617,8 +617,10 @@ def extract_beams(nodims, beampos, box, noddir, head0,
 
         dpro['GF_x_px'][expid] = beampos[0,1]
         dpro['GF_y_px'][expid] = beampos[0,0]
+
         dpro['GF_RA_hms'][expid] = coord.to_string('hmsdms').split()[0]
         dpro['GF_DEC_dms'][expid] = coord.to_string('hmsdms').split()[1]
+    
         dpro['GF_angdist_as'][expid] = _angular_distance(ra, dec, tara, tadec)
 
 
@@ -1133,7 +1135,7 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
             _print_log_info(msg, logfile, empty=2)
 
             try:
-               bfound, nowarn, beampos, fitparams = _find_beam_pos(
+                bfound, nowarn, beampos, fitparams = _find_beam_pos(
                                   im=totim, head=head0, searcharea=searcharea,
                                   fitbox=0.5*box, nodpos='both',
                                   verbose=verbose, sourceext=sourceext,
@@ -1144,7 +1146,7 @@ def reduce_exposure(rawfiles=None, draw=None, dpro=None, expid=None, sof=None,
                                   searchsmooth=searchsmooth,
                                   sigmaclip=sigmaclip)
 
-               now += nowarn
+                now += nowarn
 
             except:
                 e = sys.exc_info()
