@@ -582,7 +582,7 @@ def group_raws_to_obs(ftabraw, ftablog, ftabpro, maxgap=5,
             iwvstd = np.ma.mean(draw['IWVSTD'][j:j+nof])
 
             if dpro['pwv_stddev'][id] is not None:
-                if (iwvstd > dpro['pwv_stddev'][id]) & (iwvstd > 0):
+                if (iwvstd > dpro['pwv_stddev'][id]) and (iwvstd > 0):
                     dpro['pwv_stddev'][id] = iwvstd
 
             else:
