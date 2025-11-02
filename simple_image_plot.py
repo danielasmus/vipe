@@ -101,7 +101,7 @@ def simple_image_plot(im, fout, scale="lin", percentile=None, permin=None,
 
     # ax.set_path_effects(path_effects)
 
-    handle = ax.imshow(dim, origin='bottom',
+    handle = ax.imshow(dim, origin='lower',
                interpolation='nearest',
                vmin=vmin, cmap=cmap,
                vmax=vmax)

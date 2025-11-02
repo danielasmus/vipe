@@ -14,7 +14,7 @@ import numpy as np
 from numpy.ma import median
 from numpy import pi
 #from scipy import optimize,stats,pi
-from mpfit import mpfit
+from .mpfit import mpfit
 """
 Note about mpfit/leastsq:
 I switched everything over to the Markwardt mpfit routine for a few reasons,
@@ -201,7 +201,7 @@ def gaussfit(data,err=None,params=(),autoderiv=True,return_all=False,circle=Fals
     if usemoment.any() and len(params)==len(usemoment):
         moment = np.array(moments(data,circle,rotate,vheight,**kwargs),dtype='float')
         params[usemoment] = moment[usemoment]
-    elif params == [] or len(params)==0:
+    elif len(params)==0:
         params = (moments(data,circle,rotate,vheight,**kwargs))
     if vheight==0:
         vheight=1

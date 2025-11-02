@@ -23,7 +23,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 from astropy.io import fits
-from photutils import CircularAperture, CircularAnnulus, aperture_photometry
+from photutils.aperture import CircularAperture, CircularAnnulus, aperture_photometry
 
 
 def measure_sensit(fin=None, ext=0, im=None, pos=None, std=True, rmax=11,

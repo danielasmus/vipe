@@ -169,6 +169,9 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
             dpro.add_column(MaskedColumn(np.ma.masked_all(ntot, dtype=newcol[1]),
                                          name=newcol[0]))
             print("New Col added.")
+            
+        else:    # added so that existing empty columns are in the right data type
+            dpro[newcol[0]] = dpro[newcol[0]].astype(newcol[1])
 
 
     if not "nowarn" in dpro.colnames:
@@ -307,7 +310,7 @@ def reduce_obs(ftabraw, ftabpro, infolder, outfolder, logfile=None,
 
         targ = dpro['targname'][tored[i]].replace(" ","").replace("/","-").lstrip().rstrip()
         setup = dpro['setup'][tored[i]]
-        date = dpro['dateobs'][tored[i]][0:19]
+        date = dpro['dateobs'][tored[i]][0:19].replace(":","_")
         insmode = dpro['insmode'][tored[i]]
         datatype = dpro['datatype'][tored[i]]
         nof = dpro['nof'][tored[i]]
